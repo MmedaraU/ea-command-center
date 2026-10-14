@@ -4990,3 +4990,292 @@ def delete_meeting_decision(decision_id):
         conn.commit()
     finally:
         conn.close()
+
+
+# =========================================================
+# COMMUNICATIONS
+# =========================================================
+
+
+def add_communication(
+    contact_id,
+    comm_date,
+    channel,
+    direction="outbound",
+    summary=None,
+    next_action=None,
+    next_action_date=None,
+    exec_id=None,
+    linked_to_type=None,
+    linked_to_id=None,
+):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO communications
+               (contact_id, exec_id, comm_date, channel, direction,
+                summary, next_action, next_action_date,
+                linked_to_type, linked_to_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                contact_id,
+                exec_id,
+                comm_date,
+                channel,
+                direction,
+                summary,
+                next_action,
+                next_action_date,
+                linked_to_type,
+                linked_to_id,
+            ),
+        )
+        conn.commit()
+        comm_id = c.lastrowid
+    finally:
+        conn.close()
+
+    # Recompute denormalized fields on the contact
+    _refresh_contact_communication_summary(contact_id)
+
+    return comm_id
+
+
+def _refresh_contact_communication_summary(contact_id):
+    """
+    Recompute last_contacted_at, last_channel, next_action, next_action_date
+    on the contacts table from the communications history.
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        # Latest communication
+        c.execute(
+            """SELECT comm_date, channel FROM communications
+               WHERE contact_id = ?
+               ORDER BY comm_date DESC, id DESC
+               LIMIT 1""",
+            (contact_id,),
+        )
+        last_row = c.fetchone()
+        last_date = last_row[0] if last_row else None
+        last_channel = last_row[1] if last_row else None
+
+        # Next pending action — earliest next_action_date in the future
+        c.execute(
+            """SELECT next_action, next_action_date FROM communications
+               WHERE contact_id = ?
+                 AND next_action IS NOT NULL
+                 AND TRIM(next_action) != ''
+               ORDER BY next_action_date IS NULL,
+                        next_action_date ASC,
+                        id DESC
+               LIMIT 1""",
+            (contact_id,),
+        )
+        next_row = c.fetchone()
+        next_action = next_row[0] if next_row else None
+        next_date = next_row[1] if next_row else None
+
+        c.execute(
+            """UPDATE contacts
+               SET last_contacted_at = ?,
+                   last_channel = ?,
+                   next_action = ?,
+                   next_action_date = ?
+               WHERE id = ?""",
+            (last_date, last_channel, next_action, next_date, contact_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_communications_for_contact(contact_id, limit=None):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        q = """SELECT cm.*, e.name AS executive_name
+               FROM communications cm
+               LEFT JOIN executives e ON cm.exec_id = e.id
+               WHERE cm.contact_id = ?
+               ORDER BY cm.comm_date DESC, cm.id DESC"""
+        params = [contact_id]
+        if limit:
+            q += " LIMIT ?"
+            params.append(limit)
+        c.execute(q, params)
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_communication(comm_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute("SELECT * FROM communications WHERE id = ?", (comm_id,))
+        row = c.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def update_communication(comm_id, **kwargs):
+    if not kwargs:
+        return
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        fields, params = [], []
+        for k, v in kwargs.items():
+            fields.append(f"{k} = ?")
+            params.append(v)
+        params.append(comm_id)
+        c.execute(
+            f"UPDATE communications SET {', '.join(fields)} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Recompute summary if contact_id changed or content changed
+    existing = get_communication(comm_id)
+    if existing:
+        _refresh_contact_communication_summary(existing["contact_id"])
+
+
+def delete_communication(comm_id):
+    existing = get_communication(comm_id)
+    if not existing:
+        return
+    contact_id = existing["contact_id"]
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM communications WHERE id = ?", (comm_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    _refresh_contact_communication_summary(contact_id)
+
+
+def get_contacts_gone_quiet(days=30, exec_id=None, active_only=True):
+    """
+    Return contacts whose last_contacted_at is older than `days` days,
+    or who have never been contacted. Ordered by oldest first.
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        cutoff = (datetime.now().date() - timedelta(days=days)).isoformat()
+        conditions = ["(last_contacted_at IS NULL OR last_contacted_at <= ?)"]
+        params = [cutoff]
+        if active_only:
+            conditions.append("is_active = 1")
+        q = "SELECT * FROM contacts WHERE " + " AND ".join(conditions)
+        q += """ ORDER BY
+                    last_contacted_at IS NULL DESC,
+                    last_contacted_at ASC,
+                    name"""
+        c.execute(q, params)
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_next_actions_due(start_date=None, end_date=None, exec_id=None):
+    """
+    Return contacts with a next_action_date in the given window.
+    If no window given, returns everything with a next_action_date set.
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        conditions = ["next_action IS NOT NULL", "TRIM(next_action) != ''"]
+        params = []
+        if start_date:
+            conditions.append("next_action_date >= ?")
+            params.append(start_date)
+        if end_date:
+            conditions.append("next_action_date <= ?")
+            params.append(end_date)
+        q = "SELECT * FROM contacts WHERE " + " AND ".join(conditions)
+        q += """ ORDER BY
+                    next_action_date IS NULL,
+                    next_action_date ASC,
+                    name"""
+        c.execute(q, params)
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def count_communications_for_contact(contact_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT COUNT(*) FROM communications WHERE contact_id = ?",
+            (contact_id,),
+        )
+        return c.fetchone()[0]
+    finally:
+        conn.close()
+
+
+# --- Auto-population helpers ---
+
+
+def auto_log_meeting_completion(meeting_id, exec_id):
+    """
+    When a meeting is marked 'completed', create one inbound+outbound
+    communication entry per attendee (excluding those already logged
+    for this meeting via the linked_to fields).
+
+    Returns the number of new entries created.
+    """
+    meeting = get_meeting(meeting_id)
+    if not meeting:
+        return 0
+    attendees = get_meeting_attendees(meeting_id)
+    if not attendees:
+        return 0
+
+    summary = f"Attended: {meeting.get('title') or 'Meeting'}"
+    comm_date = meeting.get("meeting_date") or datetime.now().date().isoformat()
+
+    created = 0
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        for att in attendees:
+            # Skip if we already auto-logged for this meeting + contact
+            c.execute(
+                """SELECT 1 FROM communications
+                   WHERE contact_id = ?
+                     AND linked_to_type = 'meeting'
+                     AND linked_to_id = ?""",
+                (att["contact_id"], meeting_id),
+            )
+            if c.fetchone():
+                continue
+            c.execute(
+                """INSERT INTO communications
+                   (contact_id, exec_id, comm_date, channel, direction,
+                    summary, linked_to_type, linked_to_id)
+                   VALUES (?, ?, ?, 'in_person', 'outbound', ?, 'meeting', ?)""",
+                (att["contact_id"], exec_id, comm_date, summary, meeting_id),
+            )
+            created += 1
+            _refresh_contact_communication_summary(att["contact_id"])
+        conn.commit()
+    finally:
+        conn.close()
+    return created

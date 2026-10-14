@@ -1001,6 +1001,39 @@ def _action_status_label(status):
     return ACTION_ITEM_STATUS_LABELS.get(status, status)
 
 # =========================================================
+# COMMUNICATION CONSTANTS
+# =========================================================
+
+COMM_CHANNELS = [
+    "email", "phone", "in_person", "video", "sms", "whatsapp", "other",
+]
+
+COMM_CHANNEL_LABELS = {
+    "email": "✉️ Email",
+    "phone": "📞 Phone",
+    "in_person": "🤝 In Person",
+    "video": "🎥 Video Call",
+    "sms": "💬 SMS",
+    "whatsapp": "💚 WhatsApp",
+    "other": "📌 Other",
+}
+
+COMM_DIRECTIONS = ["outbound", "inbound"]
+
+COMM_DIRECTION_LABELS = {
+    "outbound": "↗️ Outbound",
+    "inbound": "↙️ Inbound",
+}
+
+
+def _channel_label(ch):
+    return COMM_CHANNEL_LABELS.get(ch, ch or "—")
+
+
+def _direction_label(d):
+    return COMM_DIRECTION_LABELS.get(d, d or "—")
+
+# =========================================================
 # PAGE CONFIG
 # =========================================================
 
@@ -3908,6 +3941,176 @@ def _clear_dialog_meeting_id():
     width="large",
     on_dismiss=_clear_dialog_meeting_id,
 )
+
+# =========================================================
+# COMMUNICATIONS DIALOG
+# =========================================================
+
+
+def _clear_dialog_comm_contact_id():
+    st.session_state.pop("dialog_comm_contact_id", None)
+
+
+@st.dialog(
+    "📞 Communications",
+    width="large",
+    on_dismiss=_clear_dialog_comm_contact_id,
+)
+def _render_communications_dialog(contact_id):
+    contact = db.get_contact(contact_id)
+    if not contact:
+        st.warning("Contact not found.")
+        return
+
+    st.subheader(f"📞 {contact['name']}")
+    if contact.get("role"):
+        st.caption(contact["role"])
+
+    # Summary row
+    last_contacted = contact.get("last_contacted_at") or "—"
+    last_channel = _channel_label(contact.get("last_channel"))
+    next_action = contact.get("next_action") or "—"
+    next_action_date = contact.get("next_action_date") or "—"
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.metric("Last Contacted", last_contacted)
+    with col_b:
+        st.metric("Channel", last_channel)
+
+    col_c, col_d = st.columns(2)
+    with col_c:
+        st.metric("Next Action", next_action)
+    with col_d:
+        st.metric("Due", next_action_date)
+
+    st.divider()
+
+    # ================================================
+    # LOG NEW COMMUNICATION
+    # ================================================
+    with st.expander("📝 Log a Communication", expanded=False):
+        execs_active = db.get_all_executives(active_only=True)
+        with st.form(key=f"comm_log_form_{contact_id}"):
+            col1, col2 = st.columns(2)
+            with col1:
+                comm_date = st.date_input(
+                    "Date", value=datetime.now().date(),
+                    key=f"comm_date_{contact_id}",
+                )
+                channel = st.selectbox(
+                    "Channel",
+                    options=COMM_CHANNELS,
+                    format_func=_channel_label,
+                    key=f"comm_channel_{contact_id}",
+                )
+            with col2:
+                direction = st.selectbox(
+                    "Direction",
+                    options=COMM_DIRECTIONS,
+                    format_func=_direction_label,
+                    key=f"comm_direction_{contact_id}",
+                )
+                exec_label = "—"
+                if execs_active:
+                    exec_options = {"—": None}
+                    exec_options.update(
+                        {e["name"]: e["id"] for e in execs_active}
+                    )
+                    exec_label = st.selectbox(
+                        "Executive (optional)",
+                        options=list(exec_options.keys()),
+                        key=f"comm_exec_{contact_id}",
+                    )
+                    exec_id_val = exec_options[exec_label]
+                else:
+                    exec_id_val = None
+
+            summary = st.text_input(
+                "Summary (one line)",
+                placeholder="e.g. Called re: Q3 board prep",
+                key=f"comm_summary_{contact_id}",
+            )
+            col_a, col_b = st.columns([3, 2])
+            with col_a:
+                next_action_text = st.text_input(
+                    "Next Action (optional)",
+                    placeholder="e.g. Follow up on budget",
+                    key=f"comm_next_action_{contact_id}",
+                )
+            with col_b:
+                next_action_date_input = st.date_input(
+                    "Next Action Date (optional)",
+                    value=None,
+                    key=f"comm_next_action_date_{contact_id}",
+                )
+
+            if st.form_submit_button("💾 Save"):
+                if not summary:
+                    st.error("Please enter a short summary.")
+                else:
+                    db.add_communication(
+                        contact_id=contact_id,
+                        comm_date=comm_date.isoformat(),
+                        channel=channel,
+                        direction=direction,
+                        summary=summary,
+                        next_action=next_action_text or None,
+                        next_action_date=(
+                            next_action_date_input.isoformat()
+                            if next_action_date_input else None
+                        ),
+                        exec_id=exec_id_val,
+                        linked_to_type="standalone",
+                        linked_to_id=None,
+                    )
+                    st.success("✅ Logged.")
+                    st.rerun()
+
+    st.divider()
+
+    # ================================================
+    # TIMELINE
+    # ================================================
+    st.markdown("**📜 Timeline**")
+    communications = db.get_communications_for_contact(contact_id)
+    if not communications:
+        st.caption("No communications logged yet.")
+    else:
+        for comm in communications:
+            col1, col2, col3 = st.columns([5, 1, 0.5])
+            with col1:
+                st.markdown(
+                    f"**{fmt_date(comm['comm_date'])}** · "
+                    f"{_channel_label(comm.get('channel'))} · "
+                    f"{_direction_label(comm.get('direction'))}"
+                )
+                if comm.get("summary"):
+                    st.write(comm["summary"])
+                if comm.get("next_action"):
+                    due = comm.get("next_action_date") or "—"
+                    st.caption(f"→ Next: {comm['next_action']} (due {due})")
+                if comm.get("executive_name"):
+                    st.caption(f"On behalf of: {comm['executive_name']}")
+            with col2:
+                if comm.get("linked_to_type") and comm.get("linked_to_id"):
+                    st.caption(
+                        f"🔗 {comm['linked_to_type']} #{comm['linked_to_id']}"
+                    )
+            with col3:
+                if st.button(
+                    "🗑️", key=f"comm_del_{comm['id']}",
+                    help="Delete this entry",
+                ):
+                    db.delete_communication(comm["id"])
+                    st.rerun()
+            st.divider()
+
+    # Danger zone
+    if st.button("Close", key=f"close_comm_dialog_{contact_id}"):
+        st.session_state.pop("dialog_comm_contact_id", None)
+        st.rerun()
+
 def _render_meeting_detail_dialog(meeting_id):
     meeting = db.get_meeting(meeting_id)
     if not meeting:
@@ -4052,6 +4255,11 @@ def _render_meeting_detail_dialog(meeting_id):
                 if not edit_title:
                     st.error("Title is required.")
                 else:
+                    old_status = meeting.get("status") or "draft"
+                    status_is_transitioning_to_completed = (
+                        edit_status == "completed" and old_status != "completed"
+                    )
+
                     db.update_meeting(
                         meeting_id,
                         title=edit_title,
@@ -4071,7 +4279,22 @@ def _render_meeting_detail_dialog(meeting_id):
                             edit_followup.isoformat() if edit_followup else None
                         ),
                     )
-                    st.success("✅ Meeting updated.")
+
+                    # Auto-log attendance if the meeting just completed
+                    if status_is_transitioning_to_completed:
+                        logged = db.auto_log_meeting_completion(
+                            meeting_id, exec_id
+                        )
+                        if logged > 0:
+                            st.success(
+                                f"✅ Meeting updated. "
+                                f"Logged {logged} attendee communication(s)."
+                            )
+                        else:
+                            st.success("✅ Meeting updated.")
+                    else:
+                        st.success("✅ Meeting updated.")
+
                     st.rerun()
 
     st.divider()
@@ -4676,12 +4899,6 @@ with tab_meetings:
 
                 st.divider()
 
-    # ---- Detail dialog (opened when a meeting is selected) ----
-    if st.session_state.get("dialog_meeting_id"):
-        _render_meeting_detail_dialog(
-            st.session_state["dialog_meeting_id"]
-        )
-
 
 # =========================================================
 # TAB: EVENTS (placeholder — built in Phase 4)
@@ -4821,6 +5038,78 @@ with tab_dashboard:
     st.divider()
     # ================================================
     # END MEETINGS WIDGETS
+    # ================================================
+
+    # ================================================
+    # COMMUNICATIONS WIDGETS
+    # ================================================
+    next_actions_this_week = db.get_next_actions_due(
+        start_date=today_iso, end_date=week_end_iso,
+    )
+    next_actions_overdue = [
+        c for c in db.get_next_actions_due()
+        if c.get("next_action_date")
+        and c["next_action_date"] < today_iso
+    ]
+    gone_quiet_widget = db.get_contacts_gone_quiet(days=60)
+
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.metric("📞 Next Actions (7d)", len(next_actions_this_week))
+    with col_b:
+        st.metric("🔴 Overdue Follow-ups", len(next_actions_overdue))
+    with col_c:
+        st.metric("💤 Gone Quiet (60d+)", len(gone_quiet_widget))
+
+    with st.expander(
+        "🔴 Overdue Follow-ups", expanded=bool(next_actions_overdue)
+    ):
+        if not next_actions_overdue:
+            st.caption("None overdue.")
+        else:
+            for c in next_actions_overdue[:10]:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.markdown(f"**{c['name']}** — {c['next_action']}")
+                    st.caption(
+                        f"Due: {c.get('next_action_date') or '—'}"
+                    )
+                with col2:
+                    if st.button(
+                        "Open",
+                        key=f"dash_comm_overdue_{c['id']}",
+                    ):
+                        st.session_state[
+                            "dialog_comm_contact_id"
+                        ] = c["id"]
+                        st.rerun()
+
+    with st.expander(
+        "📞 Next Actions This Week", expanded=False
+    ):
+        if not next_actions_this_week:
+            st.caption("Nothing due this week.")
+        else:
+            for c in next_actions_this_week:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.markdown(f"**{c['name']}** — {c['next_action']}")
+                    st.caption(
+                        f"Due: {c.get('next_action_date') or '—'}"
+                    )
+                with col2:
+                    if st.button(
+                        "Open",
+                        key=f"dash_comm_week_{c['id']}",
+                    ):
+                        st.session_state[
+                            "dialog_comm_contact_id"
+                        ] = c["id"]
+                        st.rerun()
+
+    st.divider()
+    # ================================================
+    # END COMMUNICATIONS WIDGETS
     # ================================================
 
     # ---- Load everything once ----
@@ -6954,6 +7243,79 @@ with tab_contacts:
                         st.success(f"✅ Contact '{add_name}' added!")
                         st.rerun()
 
+    # ---- Relationship Health ----
+    with st.expander("💬 Relationship Health", expanded=False):
+        gone_quiet_30 = db.get_contacts_gone_quiet(days=30)
+        gone_quiet_60 = db.get_contacts_gone_quiet(days=60)
+        gone_quiet_90 = db.get_contacts_gone_quiet(days=90)
+        next_actions = db.get_next_actions_due()
+
+        col_a, col_b, col_c, col_d = st.columns(4)
+        with col_a:
+            st.metric("Quiet 30+ days", len(gone_quiet_30))
+        with col_b:
+            st.metric("Quiet 60+ days", len(gone_quiet_60))
+        with col_c:
+            st.metric("Quiet 90+ days", len(gone_quiet_90))
+        with col_d:
+            st.metric("Next Actions", len(next_actions))
+
+        st.markdown("**⏰ Next Actions Due**")
+        if not next_actions:
+            st.caption("No next actions set.")
+        else:
+            today_iso = datetime.now().date().isoformat()
+            for c in next_actions[:10]:
+                overdue = (
+                    c.get("next_action_date")
+                    and c["next_action_date"] < today_iso
+                )
+                flag = "🔴" if overdue else "🟢"
+                col1, col2 = st.columns([5, 1])
+                with col1:
+                    st.markdown(
+                        f"{flag} **{c['name']}** — {c['next_action']}"
+                    )
+                    st.caption(
+                        f"Due: {c.get('next_action_date') or '—'}"
+                    )
+                with col2:
+                    if st.button(
+                        "Open",
+                        key=f"rel_open_{c['id']}",
+                    ):
+                        st.session_state[
+                            "dialog_comm_contact_id"
+                        ] = c["id"]
+                        st.rerun()
+
+        st.divider()
+
+        st.markdown("**💤 Gone Quiet (90+ days)**")
+        if not gone_quiet_90:
+            st.caption("Everyone has been contacted in the last 90 days.")
+        else:
+            for c in gone_quiet_90[:10]:
+                last = c.get("last_contacted_at") or "Never"
+                col1, col2 = st.columns([5, 1])
+                with col1:
+                    st.markdown(f"**{c['name']}**")
+                    st.caption(
+                        f"Last: {last}  ·  "
+                        f"{c.get('role') or '—'}"
+                    )
+                with col2:
+                    if st.button(
+                        "Open",
+                        key=f"rel_quiet_{c['id']}",
+                    ):
+                        st.session_state[
+                            "dialog_comm_contact_id"
+                        ] = c["id"]
+                        st.rerun()
+
+    st.divider()
+
     all_contacts = (
         db.get_contacts(filter_company_id, active_only=False)
         if filter_company_id
@@ -7165,7 +7527,7 @@ with tab_contacts:
                     "company_id"
                 ) and cid in default_ids_by_company.get(contact["company_id"], set())
 
-                cols = st.columns([2.2, 1.5, 2.2, 2.2, 0.5, 0.5])
+                cols = st.columns([2.2, 1.5, 2.2, 2.2, 0.5, 0.5, 0.5])
 
                 # ---- Name (+ markers, + role inline) ----
                 with cols[0]:
@@ -7227,6 +7589,13 @@ with tab_contacts:
                 with cols[5]:
                     if st.button("🗑️", key=f"del_contact_{cid}"):
                         st.session_state[f"delete_contact_{cid}"] = True
+                with cols[6]:
+                    if st.button(
+                        "📞",
+                        key=f"comm_contact_{cid}",
+                        help="Log communication / view history",
+                    ):
+                        st.session_state["dialog_comm_contact_id"] = cid
 
                 # ---- Inline edit form (unchanged) ----
                 if st.session_state.get(f"editing_contact_{cid}", False):
@@ -8959,3 +9328,19 @@ with tab_library:
                             on_confirm=_del_emb,
                         )
                     st.divider()
+
+# =========================================================
+# GLOBAL DIALOGS
+# =========================================================
+# Rendered outside tab blocks so they can be triggered from
+# any tab and still appear.
+
+if st.session_state.get("dialog_meeting_id"):
+    _render_meeting_detail_dialog(
+        st.session_state["dialog_meeting_id"]
+    )
+
+if st.session_state.get("dialog_comm_contact_id"):
+    _render_communications_dialog(
+        st.session_state["dialog_comm_contact_id"]
+    )
