@@ -4558,3 +4558,435 @@ def get_nearest_exchange_rate(
         return dict(row) if row else None
     finally:
         conn.close()
+
+
+# =========================================================
+# MEETINGS
+# =========================================================
+
+
+def add_meeting(
+    exec_id,
+    title,
+    meeting_type=None,
+    status="draft",
+    meeting_date=None,
+    meeting_time=None,
+    duration_minutes=None,
+    location=None,
+    video_link=None,
+    calendar_event_url=None,
+    agenda=None,
+    notes_native=None,
+    notes_url=None,
+    notes_label=None,
+    follow_up_date=None,
+    linked_trip_id=None,
+):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO meetings
+               (exec_id, title, meeting_type, status, meeting_date,
+                meeting_time, duration_minutes, location, video_link,
+                calendar_event_url, agenda, notes_native, notes_url,
+                notes_label, follow_up_date, linked_trip_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                exec_id,
+                title,
+                meeting_type,
+                status,
+                meeting_date,
+                meeting_time,
+                duration_minutes,
+                location,
+                video_link,
+                calendar_event_url,
+                agenda,
+                notes_native,
+                notes_url,
+                notes_label,
+                follow_up_date,
+                linked_trip_id,
+            ),
+        )
+        conn.commit()
+        return c.lastrowid
+    finally:
+        conn.close()
+
+
+def get_meeting(meeting_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT m.*, e.name AS executive_name
+               FROM meetings m
+               LEFT JOIN executives e ON m.exec_id = e.id
+               WHERE m.id = ?""",
+            (meeting_id,),
+        )
+        row = c.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_meetings(
+    exec_id=None,
+    status=None,
+    start_date=None,
+    end_date=None,
+    without_notes=False,
+    awaiting_response=False,
+    search=None,
+):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        conditions, params = [], []
+        if exec_id:
+            conditions.append("m.exec_id = ?")
+            params.append(exec_id)
+        if status:
+            if isinstance(status, (list, tuple)):
+                placeholders = ",".join("?" * len(status))
+                conditions.append(f"m.status IN ({placeholders})")
+                params.extend(status)
+            else:
+                conditions.append("m.status = ?")
+                params.append(status)
+        if start_date:
+            conditions.append("m.meeting_date >= ?")
+            params.append(start_date)
+        if end_date:
+            conditions.append("m.meeting_date <= ?")
+            params.append(end_date)
+        if without_notes:
+            conditions.append(
+                "((m.notes_url IS NULL OR m.notes_url = '') "
+                "AND (m.notes_native IS NULL OR m.notes_native = ''))"
+            )
+        if awaiting_response:
+            conditions.append(
+                "m.status IN ('request_sent', 'pending', 'tentative', 'no_response')"
+            )
+        if search:
+            like = f"%{search.lower()}%"
+            conditions.append(
+                "(LOWER(m.title) LIKE ? OR LOWER(COALESCE(m.agenda,'')) LIKE ?)"
+            )
+            params.extend([like, like])
+
+        q = """SELECT m.*, e.name AS executive_name
+               FROM meetings m
+               LEFT JOIN executives e ON m.exec_id = e.id"""
+        if conditions:
+            q += " WHERE " + " AND ".join(conditions)
+        q += " ORDER BY m.meeting_date DESC, m.meeting_time DESC, m.id DESC"
+        c.execute(q, params)
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def update_meeting(meeting_id, **kwargs):
+    if not kwargs:
+        return
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        fields, params = [], []
+        for k, v in kwargs.items():
+            fields.append(f"{k} = ?")
+            params.append(v)
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(meeting_id)
+        c.execute(f"UPDATE meetings SET {', '.join(fields)} WHERE id = ?", params)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_meeting(meeting_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM meetings WHERE id = ?", (meeting_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def find_duplicate_meetings(exec_id, title, meeting_date, exclude_id=None):
+    if not exec_id or not title or not meeting_date:
+        return []
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        q = """SELECT * FROM meetings
+               WHERE exec_id = ? AND LOWER(title) = LOWER(?)
+                 AND meeting_date = ?"""
+        params = [exec_id, title.strip(), meeting_date]
+        if exclude_id:
+            q += " AND id != ?"
+            params.append(exclude_id)
+        c.execute(q, params)
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+# --- Attendees ---
+
+
+def add_meeting_attendee(
+    meeting_id,
+    contact_id,
+    is_internal=0,
+    is_vip=0,
+    role=None,
+    assistant_contact_id=None,
+    status="pending",
+    response_notes=None,
+):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO meeting_attendees
+               (meeting_id, contact_id, is_internal, is_vip, role,
+                assistant_contact_id, status, response_notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                meeting_id,
+                contact_id,
+                is_internal,
+                is_vip,
+                role,
+                assistant_contact_id,
+                status,
+                response_notes,
+            ),
+        )
+        conn.commit()
+        return c.lastrowid
+    finally:
+        conn.close()
+
+
+def get_meeting_attendees(meeting_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT ma.*, c.name AS contact_name, c.email AS contact_email,
+                      c.phone AS contact_phone, c.role AS contact_role
+               FROM meeting_attendees ma
+               LEFT JOIN contacts c ON ma.contact_id = c.id
+               WHERE ma.meeting_id = ?
+               ORDER BY ma.is_vip DESC, c.name""",
+            (meeting_id,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def update_meeting_attendee(attendee_id, **kwargs):
+    if not kwargs:
+        return
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        fields, params = [], []
+        for k, v in kwargs.items():
+            fields.append(f"{k} = ?")
+            params.append(v)
+        params.append(attendee_id)
+        c.execute(
+            f"UPDATE meeting_attendees SET {', '.join(fields)} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def remove_meeting_attendee(attendee_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM meeting_attendees WHERE id = ?", (attendee_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# --- Action items ---
+
+
+def add_meeting_action_item(
+    meeting_id,
+    description,
+    owner_contact_id=None,
+    owner_exec_id=None,
+    due_date=None,
+    status="not_started",
+):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO meeting_action_items
+               (meeting_id, description, owner_contact_id, owner_exec_id,
+                due_date, status)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                meeting_id,
+                description,
+                owner_contact_id,
+                owner_exec_id,
+                due_date,
+                status,
+            ),
+        )
+        conn.commit()
+        return c.lastrowid
+    finally:
+        conn.close()
+
+
+def get_meeting_action_items(meeting_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT ai.*,
+                      c.name AS owner_contact_name,
+                      e.name AS owner_exec_name
+               FROM meeting_action_items ai
+               LEFT JOIN contacts c ON ai.owner_contact_id = c.id
+               LEFT JOIN executives e ON ai.owner_exec_id = e.id
+               WHERE ai.meeting_id = ?
+               ORDER BY ai.due_date IS NULL, ai.due_date ASC, ai.id""",
+            (meeting_id,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def update_meeting_action_item(item_id, **kwargs):
+    if not kwargs:
+        return
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        fields, params = [], []
+        for k, v in kwargs.items():
+            fields.append(f"{k} = ?")
+            params.append(v)
+        params.append(item_id)
+        c.execute(
+            f"UPDATE meeting_action_items SET {', '.join(fields)} " "WHERE id = ?",
+            params,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_meeting_action_item(item_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM meeting_action_items WHERE id = ?", (item_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_action_items_due(exec_id=None, start_date=None, end_date=None):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        conditions, params = ["ai.status != 'done'"], []
+        if exec_id:
+            conditions.append("m.exec_id = ?")
+            params.append(exec_id)
+        if start_date:
+            conditions.append("ai.due_date >= ?")
+            params.append(start_date)
+        if end_date:
+            conditions.append("ai.due_date <= ?")
+            params.append(end_date)
+
+        q = """SELECT ai.*, m.title AS meeting_title,
+                      m.id AS meeting_id, m.exec_id,
+                      c.name AS owner_contact_name,
+                      e.name AS owner_exec_name
+               FROM meeting_action_items ai
+               JOIN meetings m ON ai.meeting_id = m.id
+               LEFT JOIN contacts c ON ai.owner_contact_id = c.id
+               LEFT JOIN executives e ON ai.owner_exec_id = e.id
+               WHERE """
+        q += " AND ".join(conditions)
+        q += " ORDER BY ai.due_date IS NULL, ai.due_date ASC"
+        c.execute(q, params)
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+# --- Decisions ---
+
+
+def add_meeting_decision(meeting_id, decision, made_by=None):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO meeting_decisions (meeting_id, decision, made_by)
+               VALUES (?, ?, ?)""",
+            (meeting_id, decision, made_by),
+        )
+        conn.commit()
+        return c.lastrowid
+    finally:
+        conn.close()
+
+
+def get_meeting_decisions(meeting_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT * FROM meeting_decisions
+               WHERE meeting_id = ?
+               ORDER BY id""",
+            (meeting_id,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def delete_meeting_decision(decision_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM meeting_decisions WHERE id = ?", (decision_id,))
+        conn.commit()
+    finally:
+        conn.close()

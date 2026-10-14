@@ -950,6 +950,55 @@ def format_item_datetime(item, exec_timezone, display_mode="Home"):
         item["datetime_start"], tz_str, display_tz
     )
 
+# =========================================================
+# MEETING CONSTANTS
+# =========================================================
+
+MEETING_TYPES = [
+    "Internal", "Client", "Board", "Candidate", "Personal", "VIP", "Other",
+]
+
+MEETING_STATUSES = [
+    "draft", "request_sent", "pending", "confirmed", "tentative",
+    "declined", "no_response", "rescheduled", "cancelled", "completed",
+]
+
+MEETING_STATUS_LABELS = {
+    "draft": "📝 Draft",
+    "request_sent": "📤 Request Sent",
+    "pending": "⏳ Pending",
+    "confirmed": "✅ Confirmed",
+    "tentative": "❓ Tentative",
+    "declined": "❌ Declined",
+    "no_response": "🔇 No Response",
+    "rescheduled": "🔄 Rescheduled",
+    "cancelled": "🚫 Cancelled",
+    "completed": "🏁 Completed",
+}
+
+ATTENDEE_STATUSES = [
+    "pending", "accepted", "declined", "tentative", "no_response", "waitlist",
+]
+
+ACTION_ITEM_STATUSES = [
+    "not_started", "in_progress", "blocked", "done", "overdue",
+]
+
+ACTION_ITEM_STATUS_LABELS = {
+    "not_started": "⭕ Not Started",
+    "in_progress": "🔄 In Progress",
+    "blocked": "🚧 Blocked",
+    "done": "✅ Done",
+    "overdue": "⚠️ Overdue",
+}
+
+
+def _meeting_status_label(status):
+    return MEETING_STATUS_LABELS.get(status, status)
+
+
+def _action_status_label(status):
+    return ACTION_ITEM_STATUS_LABELS.get(status, status)
 
 # =========================================================
 # PAGE CONFIG
@@ -3845,6 +3894,446 @@ def _render_trip_edit_modal(trip_id_modal, country_list):
         st.session_state.pop("dialog_trip_id", None)   # ← new
         st.rerun()
 
+# =========================================================
+# MEETING DETAIL DIALOG
+# =========================================================
+
+
+def _clear_dialog_meeting_id():
+    st.session_state.pop("dialog_meeting_id", None)
+
+
+@st.dialog(
+    "📅 Meeting",
+    width="large",
+    on_dismiss=_clear_dialog_meeting_id,
+)
+def _render_meeting_detail_dialog(meeting_id):
+    meeting = db.get_meeting(meeting_id)
+    if not meeting:
+        st.warning("Meeting not found.")
+        return
+
+    exec_id = meeting["exec_id"]
+    st.subheader(f"📅 {meeting['title']}")
+    st.caption(
+        f"**{meeting.get('executive_name') or '—'}** · "
+        f"{_meeting_status_label(meeting.get('status') or 'draft')}"
+    )
+
+    # ================================================
+    # SECTION: Edit Meeting
+    # ================================================
+    with st.expander("✏️ Edit Meeting", expanded=False):
+        with st.form(key=f"mtg_edit_form_{meeting_id}"):
+            col1, col2 = st.columns(2)
+            with col1:
+                edit_title = st.text_input(
+                    "Title*",
+                    value=meeting.get("title") or "",
+                    key=f"mtg_edit_title_{meeting_id}",
+                )
+                edit_type = st.selectbox(
+                    "Type",
+                    options=[""] + MEETING_TYPES,
+                    index=(
+                        ([""] + MEETING_TYPES).index(meeting["meeting_type"])
+                        if meeting.get("meeting_type") in MEETING_TYPES
+                        else 0
+                    ),
+                    key=f"mtg_edit_type_{meeting_id}",
+                )
+                edit_status = st.selectbox(
+                    "Status",
+                    options=MEETING_STATUSES,
+                    index=(
+                        MEETING_STATUSES.index(meeting["status"])
+                        if meeting.get("status") in MEETING_STATUSES
+                        else 0
+                    ),
+                    format_func=_meeting_status_label,
+                    key=f"mtg_edit_status_{meeting_id}",
+                )
+            with col2:
+                try:
+                    default_date = (
+                        datetime.fromisoformat(meeting["meeting_date"]).date()
+                        if meeting.get("meeting_date")
+                        else datetime.now().date()
+                    )
+                except Exception:
+                    default_date = datetime.now().date()
+                edit_date = st.date_input(
+                    "Date",
+                    value=default_date,
+                    key=f"mtg_edit_date_{meeting_id}",
+                )
+                edit_time = st.text_input(
+                    "Time (e.g. 14:30)",
+                    value=meeting.get("meeting_time") or "",
+                    key=f"mtg_edit_time_{meeting_id}",
+                )
+                edit_duration = st.number_input(
+                    "Duration (minutes)",
+                    min_value=0,
+                    step=15,
+                    value=int(meeting.get("duration_minutes") or 0),
+                    key=f"mtg_edit_dur_{meeting_id}",
+                )
+
+            edit_location = st.text_input(
+                "Location",
+                value=meeting.get("location") or "",
+                key=f"mtg_edit_loc_{meeting_id}",
+            )
+            edit_video = st.text_input(
+                "Video Link",
+                value=meeting.get("video_link") or "",
+                key=f"mtg_edit_video_{meeting_id}",
+            )
+            edit_cal_url = st.text_input(
+                "🔗 Calendar Event URL (Google Calendar / Outlook)",
+                value=meeting.get("calendar_event_url") or "",
+                key=f"mtg_edit_cal_{meeting_id}",
+                help="Paste the link to the calendar event. Opens in a new tab.",
+            )
+            edit_agenda = st.text_area(
+                "Agenda",
+                value=meeting.get("agenda") or "",
+                height=100,
+                key=f"mtg_edit_agenda_{meeting_id}",
+            )
+            edit_notes_native = st.text_area(
+                "Quick Notes (plain text)",
+                value=meeting.get("notes_native") or "",
+                height=120,
+                key=f"mtg_edit_notes_{meeting_id}",
+            )
+
+            col_a, col_b = st.columns(2)
+            with col_a:
+                edit_notes_url = st.text_input(
+                    "🔗 Notes Doc URL",
+                    value=meeting.get("notes_url") or "",
+                    key=f"mtg_edit_notes_url_{meeting_id}",
+                )
+            with col_b:
+                edit_notes_label = st.text_input(
+                    "Notes Label",
+                    value=meeting.get("notes_label") or "",
+                    placeholder="e.g. Board meeting notes",
+                    key=f"mtg_edit_notes_label_{meeting_id}",
+                )
+
+            try:
+                default_follow = (
+                    datetime.fromisoformat(meeting["follow_up_date"]).date()
+                    if meeting.get("follow_up_date")
+                    else None
+                )
+            except Exception:
+                default_follow = None
+            edit_followup = st.date_input(
+                "Follow-up Date",
+                value=default_follow,
+                key=f"mtg_edit_followup_{meeting_id}",
+            )
+
+            col_save, col_cancel = st.columns(2)
+            with col_save:
+                save_clicked = st.form_submit_button("💾 Save")
+            with col_cancel:
+                cancel_clicked = st.form_submit_button("❌ Cancel")
+
+            if cancel_clicked:
+                st.rerun()
+
+            if save_clicked:
+                if not edit_title:
+                    st.error("Title is required.")
+                else:
+                    db.update_meeting(
+                        meeting_id,
+                        title=edit_title,
+                        meeting_type=edit_type or None,
+                        status=edit_status,
+                        meeting_date=edit_date.isoformat() if edit_date else None,
+                        meeting_time=edit_time or None,
+                        duration_minutes=int(edit_duration) or None,
+                        location=edit_location or None,
+                        video_link=edit_video or None,
+                        calendar_event_url=edit_cal_url or None,
+                        agenda=edit_agenda or None,
+                        notes_native=edit_notes_native or None,
+                        notes_url=edit_notes_url or None,
+                        notes_label=edit_notes_label or None,
+                        follow_up_date=(
+                            edit_followup.isoformat() if edit_followup else None
+                        ),
+                    )
+                    st.success("✅ Meeting updated.")
+                    st.rerun()
+
+    st.divider()
+
+    # ================================================
+    # SECTION: Attendees
+    # ================================================
+    st.markdown("**👥 Attendees**")
+    attendees = db.get_meeting_attendees(meeting_id)
+
+    if attendees:
+        for att in attendees:
+            col1, col2, col3, col4 = st.columns([3, 2, 2, 0.5])
+            with col1:
+                vip = " ⭐" if att.get("is_vip") else ""
+                internal = " · Internal" if att.get("is_internal") else " · External"
+                st.markdown(f"**{att['contact_name'] or '—'}**{vip}")
+                if att.get("role"):
+                    st.caption(att["role"])
+                st.caption(internal)
+            with col2:
+                current_status = att.get("status") or "pending"
+                new_status = st.selectbox(
+                    "Status",
+                    options=ATTENDEE_STATUSES,
+                    index=(
+                        ATTENDEE_STATUSES.index(current_status)
+                        if current_status in ATTENDEE_STATUSES
+                        else 0
+                    ),
+                    key=f"mtg_att_status_{att['id']}",
+                    label_visibility="collapsed",
+                )
+                if new_status != current_status:
+                    db.update_meeting_attendee(att["id"], status=new_status)
+                    st.rerun()
+            with col3:
+                if att.get("response_notes"):
+                    st.caption(att["response_notes"])
+            with col4:
+                if st.button("🗑️", key=f"mtg_att_del_{att['id']}"):
+                    db.remove_meeting_attendee(att["id"])
+                    st.rerun()
+    else:
+        st.caption("No attendees yet.")
+
+    with st.expander("➕ Add Attendee", expanded=False):
+        with st.form(key=f"mtg_add_att_form_{meeting_id}"):
+            contacts = db.get_contacts(active_only=True)
+            if not contacts:
+                st.info("No contacts yet. Add contacts in the Contacts tab.")
+            else:
+                contact_options = {
+                    f"{c['name']} ({c.get('role') or '—'})": c["id"] for c in contacts
+                }
+                selected_label = st.selectbox(
+                    "Contact*",
+                    options=list(contact_options.keys()),
+                    key=f"mtg_add_att_contact_{meeting_id}",
+                )
+                col_a, col_b, col_c = st.columns(3)
+                with col_a:
+                    is_internal = st.checkbox(
+                        "Internal",
+                        key=f"mtg_add_att_internal_{meeting_id}",
+                    )
+                with col_b:
+                    is_vip = st.checkbox("VIP", key=f"mtg_add_att_vip_{meeting_id}")
+                with col_c:
+                    att_status = st.selectbox(
+                        "Status",
+                        options=ATTENDEE_STATUSES,
+                        key=f"mtg_add_att_status_{meeting_id}",
+                    )
+                role = st.text_input(
+                    "Role at meeting",
+                    key=f"mtg_add_att_role_{meeting_id}",
+                )
+                if st.form_submit_button("➕ Add"):
+                    contact_id = contact_options[selected_label]
+                    # Prevent exact duplicate
+                    existing_ids = [a["contact_id"] for a in attendees]
+                    if contact_id in existing_ids:
+                        st.warning("This contact is already an attendee.")
+                    else:
+                        db.add_meeting_attendee(
+                            meeting_id,
+                            contact_id,
+                            is_internal=1 if is_internal else 0,
+                            is_vip=1 if is_vip else 0,
+                            role=role or None,
+                            status=att_status,
+                        )
+                        st.rerun()
+
+    st.divider()
+
+    # ================================================
+    # SECTION: Action Items
+    # ================================================
+    st.markdown("**✅ Action Items**")
+    action_items = db.get_meeting_action_items(meeting_id)
+
+    if action_items:
+        for item in action_items:
+            col1, col2, col3, col4 = st.columns([4, 2, 2, 0.5])
+            with col1:
+                st.markdown(f"**{item['description']}**")
+                owner = (
+                    item.get("owner_contact_name") or item.get("owner_exec_name") or "—"
+                )
+                due = item.get("due_date") or "—"
+                st.caption(f"Owner: {owner} · Due: {due}")
+            with col2:
+                current_status = item.get("status") or "not_started"
+                new_status = st.selectbox(
+                    "Status",
+                    options=ACTION_ITEM_STATUSES,
+                    index=(
+                        ACTION_ITEM_STATUSES.index(current_status)
+                        if current_status in ACTION_ITEM_STATUSES
+                        else 0
+                    ),
+                    format_func=_action_status_label,
+                    key=f"mtg_act_status_{item['id']}",
+                    label_visibility="collapsed",
+                )
+                if new_status != current_status:
+                    db.update_meeting_action_item(item["id"], status=new_status)
+                    st.rerun()
+            with col3:
+                st.caption("")
+            with col4:
+                if st.button("🗑️", key=f"mtg_act_del_{item['id']}"):
+                    db.delete_meeting_action_item(item["id"])
+                    st.rerun()
+    else:
+        st.caption("No action items yet.")
+
+    with st.expander("➕ Add Action Item", expanded=False):
+        with st.form(key=f"mtg_add_action_form_{meeting_id}"):
+            description = st.text_input(
+                "Description*", key=f"mtg_add_action_desc_{meeting_id}"
+            )
+            contacts = db.get_contacts(active_only=True)
+            owner_type = st.radio(
+                "Owner type",
+                options=["Contact", "Executive", "None"],
+                horizontal=True,
+                key=f"mtg_add_action_owner_type_{meeting_id}",
+            )
+            owner_contact_id = None
+            owner_exec_id = None
+            if owner_type == "Contact" and contacts:
+                contact_options = {f"{c['name']}": c["id"] for c in contacts}
+                selected_owner_label = st.selectbox(
+                    "Owner contact",
+                    options=list(contact_options.keys()),
+                    key=f"mtg_add_action_owner_{meeting_id}",
+                )
+                owner_contact_id = contact_options[selected_owner_label]
+            elif owner_type == "Executive":
+                execs = db.get_all_executives(active_only=False)
+                if execs:
+                    exec_options = {e["name"]: e["id"] for e in execs}
+                    selected_exec_label = st.selectbox(
+                        "Owner executive",
+                        options=list(exec_options.keys()),
+                        key=f"mtg_add_action_owner_exec_{meeting_id}",
+                    )
+                    owner_exec_id = exec_options[selected_exec_label]
+
+            col_a, col_b = st.columns(2)
+            with col_a:
+                due_date_input = st.date_input(
+                    "Due Date",
+                    value=None,
+                    key=f"mtg_add_action_due_{meeting_id}",
+                )
+            with col_b:
+                initial_status = st.selectbox(
+                    "Status",
+                    options=ACTION_ITEM_STATUSES,
+                    format_func=_action_status_label,
+                    key=f"mtg_add_action_status_{meeting_id}",
+                )
+
+            if st.form_submit_button("➕ Add"):
+                if not description:
+                    st.error("Description is required.")
+                else:
+                    db.add_meeting_action_item(
+                        meeting_id,
+                        description,
+                        owner_contact_id=owner_contact_id,
+                        owner_exec_id=owner_exec_id,
+                        due_date=(
+                            due_date_input.isoformat() if due_date_input else None
+                        ),
+                        status=initial_status,
+                    )
+                    st.rerun()
+
+    st.divider()
+
+    # ================================================
+    # SECTION: Decisions
+    # ================================================
+    st.markdown("**📌 Decisions**")
+    decisions = db.get_meeting_decisions(meeting_id)
+
+    if decisions:
+        for dec in decisions:
+            col1, col2 = st.columns([5, 0.5])
+            with col1:
+                st.markdown(f"• {dec['decision']}")
+                if dec.get("made_by"):
+                    st.caption(f"Made by: {dec['made_by']}")
+            with col2:
+                if st.button("🗑️", key=f"mtg_dec_del_{dec['id']}"):
+                    db.delete_meeting_decision(dec["id"])
+                    st.rerun()
+    else:
+        st.caption("No decisions logged yet.")
+
+    with st.form(key=f"mtg_add_decision_form_{meeting_id}"):
+        col_a, col_b = st.columns([3, 2])
+        with col_a:
+            decision_text = st.text_input(
+                "Decision", key=f"mtg_add_dec_text_{meeting_id}"
+            )
+        with col_b:
+            made_by = st.text_input("Made by", key=f"mtg_add_dec_by_{meeting_id}")
+        if st.form_submit_button("➕ Log Decision"):
+            if decision_text:
+                db.add_meeting_decision(meeting_id, decision_text, made_by or None)
+                st.rerun()
+
+    st.divider()
+
+    # ================================================
+    # SECTION: Danger Zone
+    # ================================================
+    if st.button(
+        "🗑️ Delete This Meeting", type="primary", key=f"mtg_del_btn_{meeting_id}"
+    ):
+        st.session_state[f"confirm_del_mtg_{meeting_id}"] = True
+
+    if st.session_state.get(f"confirm_del_mtg_{meeting_id}", False):
+        st.warning(f"⚠️ Permanently delete meeting '{meeting['title']}'?")
+        col_yes, col_no = st.columns(2)
+        with col_yes:
+            if st.button("✅ Yes, Delete", key=f"mtg_del_yes_{meeting_id}"):
+                db.delete_meeting(meeting_id)
+                st.session_state.pop(f"confirm_del_mtg_{meeting_id}", None)
+                st.session_state.pop("dialog_meeting_id", None)
+                st.rerun()
+        with col_no:
+            if st.button("❌ Cancel", key=f"mtg_del_no_{meeting_id}"):
+                st.session_state.pop(f"confirm_del_mtg_{meeting_id}", None)
+                st.rerun()
+
 
 # =========================================================
 # TABS
@@ -3882,16 +4371,316 @@ tab_names = [
 
 
 # =========================================================
-# TAB: MEETINGS (placeholder — built in Phase 2)
+# TAB: MEETINGS
 # =========================================================
 
 with tab_meetings:
     st.header("📅 Meetings")
-    st.info(
-        "The Meetings module is coming in **Phase 2**. "
-        "It will track meeting records, attendees, decisions, and action items, "
-        "and link out to Google Calendar and Docs."
+
+    # ---- Filters row ----
+    col1, col2, col3, col4 = st.columns([2, 1.5, 1.8, 2.5])
+    with col1:
+        exec_filter_options = ["All Executives"] + [
+            f"{e['name']} (ID: {e['id']})"
+            for e in db.get_all_executives(active_only=False)
+        ]
+        exec_filter_label = st.selectbox(
+            "Executive", exec_filter_options, key="mtg_filter_exec"
+        )
+        exec_filter_id = (
+            None
+            if exec_filter_label == "All Executives"
+            else int(exec_filter_label.split("(ID: ")[1].rstrip(")"))
+        )
+    with col2:
+        status_filter = st.selectbox(
+            "Status",
+            ["Active", "All"] + MEETING_STATUSES,
+            format_func=lambda s: {
+                "Active": "Active",
+                "All": "All",
+            }.get(s, _meeting_status_label(s)),
+            key="mtg_filter_status",
+        )
+    with col3:
+        view_filter = st.selectbox(
+            "View",
+            [
+                "All meetings",
+                "Awaiting response",
+                "Without notes",
+            ],
+            key="mtg_filter_view",
+        )
+    with col4:
+        search_query = st.text_input(
+            "Search", placeholder="Title or agenda...",
+            key="mtg_search",
+        )
+
+    # ---- New button ----
+    col_new, _sp = st.columns([1.2, 5])
+    with col_new:
+        if st.button("➕ New Meeting", type="primary",
+                     key="mtg_new_btn"):
+            st.session_state["mtg_show_create"] = True
+
+    # ---- Create form ----
+    if st.session_state.get("mtg_show_create", False):
+        with st.expander("➕ New Meeting", expanded=True):
+            execs_active = db.get_all_executives(active_only=True)
+            if not execs_active:
+                st.warning(
+                    "No active executives. Add one in the sidebar first."
+                )
+            else:
+                with st.form("mtg_create_form"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        exec_options = {
+                            e["name"]: e["id"] for e in execs_active
+                        }
+                        new_exec_label = st.selectbox(
+                            "Executive*",
+                            options=list(exec_options.keys()),
+                            key="mtg_new_exec",
+                        )
+                        new_title = st.text_input(
+                            "Title*", key="mtg_new_title"
+                        )
+                        new_type = st.selectbox(
+                            "Type",
+                            options=[""] + MEETING_TYPES,
+                            key="mtg_new_type",
+                        )
+                        new_status = st.selectbox(
+                            "Status",
+                            options=MEETING_STATUSES,
+                            format_func=_meeting_status_label,
+                            key="mtg_new_status",
+                        )
+                    with col2:
+                        new_date = st.date_input(
+                            "Date", value=datetime.now().date(),
+                            key="mtg_new_date",
+                        )
+                        new_time = st.text_input(
+                            "Time (e.g. 14:30)", key="mtg_new_time"
+                        )
+                        new_duration = st.number_input(
+                            "Duration (minutes)", min_value=0, step=15,
+                            value=30, key="mtg_new_dur",
+                        )
+
+                    new_location = st.text_input(
+                        "Location", key="mtg_new_loc"
+                    )
+                    new_video = st.text_input(
+                        "Video Link", key="mtg_new_video"
+                    )
+                    new_cal_url = st.text_input(
+                        "🔗 Calendar Event URL (Google Calendar / Outlook)",
+                        key="mtg_new_cal",
+                    )
+                    new_agenda = st.text_area(
+                        "Agenda", height=100, key="mtg_new_agenda"
+                    )
+                    new_notes_native = st.text_area(
+                        "Quick Notes (plain text)",
+                        height=100, key="mtg_new_notes",
+                    )
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        new_notes_url = st.text_input(
+                            "🔗 Notes Doc URL", key="mtg_new_notes_url"
+                        )
+                    with col_b:
+                        new_notes_label = st.text_input(
+                            "Notes Label",
+                            placeholder="e.g. Board meeting notes",
+                            key="mtg_new_notes_label",
+                        )
+                    new_followup = st.date_input(
+                        "Follow-up Date", value=None,
+                        key="mtg_new_followup",
+                    )
+
+                    col_submit, col_cancel = st.columns(2)
+                    with col_submit:
+                        submitted = st.form_submit_button("💾 Create")
+                    with col_cancel:
+                        cancelled = st.form_submit_button("❌ Cancel")
+
+                    if cancelled:
+                        st.session_state["mtg_show_create"] = False
+                        st.rerun()
+
+                    if submitted:
+                        if not new_title:
+                            st.error("Title is required.")
+                        else:
+                            new_exec_id = exec_options[new_exec_label]
+                            # Duplicate check
+                            dupes = db.find_duplicate_meetings(
+                                new_exec_id, new_title,
+                                new_date.isoformat() if new_date else None,
+                            )
+                            if dupes:
+                                st.warning(
+                                    "⚠️ A meeting with the same title and "
+                                    "date already exists for this executive."
+                                )
+                                for d in dupes:
+                                    st.caption(
+                                        f"- {d['title']} "
+                                        f"({d.get('meeting_date')})"
+                                    )
+                                st.info(
+                                    "Change the title or date, or edit the "
+                                    "existing meeting instead."
+                                )
+                            else:
+                                db.add_meeting(
+                                    new_exec_id,
+                                    new_title,
+                                    meeting_type=new_type or None,
+                                    status=new_status,
+                                    meeting_date=(
+                                        new_date.isoformat()
+                                        if new_date else None
+                                    ),
+                                    meeting_time=new_time or None,
+                                    duration_minutes=(
+                                        int(new_duration)
+                                        if new_duration else None
+                                    ),
+                                    location=new_location or None,
+                                    video_link=new_video or None,
+                                    calendar_event_url=new_cal_url or None,
+                                    agenda=new_agenda or None,
+                                    notes_native=new_notes_native or None,
+                                    notes_url=new_notes_url or None,
+                                    notes_label=new_notes_label or None,
+                                    follow_up_date=(
+                                        new_followup.isoformat()
+                                        if new_followup else None
+                                    ),
+                                )
+                                st.session_state["mtg_show_create"] = False
+                                st.success("✅ Meeting created.")
+                                st.rerun()
+
+    st.divider()
+
+    # ---- Build query filters ----
+    status_param = None
+    if status_filter == "Active":
+        status_param = [
+            "draft", "request_sent", "pending", "confirmed",
+            "tentative", "rescheduled",
+        ]
+    elif status_filter != "All":
+        status_param = status_filter
+
+    without_notes = view_filter == "Without notes"
+    awaiting = view_filter == "Awaiting response"
+
+    meetings = db.get_meetings(
+        exec_id=exec_filter_id,
+        status=status_param,
+        without_notes=without_notes,
+        awaiting_response=awaiting,
+        search=search_query or None,
     )
+
+    # ---- List header ----
+    if not meetings:
+        st.info("No meetings match these filters.")
+    else:
+        st.write(f"**{len(meetings)} meeting(s)**")
+
+        # ---- Render each meeting as a compact row ----
+        for m in meetings:
+            with st.container():
+                col1, col2, col3 = st.columns([6, 1, 1])
+                with col1:
+                    status_label = _meeting_status_label(
+                        m.get("status") or "draft"
+                    )
+                    st.markdown(
+                        f"### {m['title']}  ·  {status_label}"
+                    )
+                    st.caption(
+                        f"👤 {m.get('executive_name') or '—'}  ·  "
+                        f"📅 {fmt_date(m.get('meeting_date'))}"
+                        + (
+                            f"  ·  🕐 {m['meeting_time']}"
+                            if m.get("meeting_time") else ""
+                        )
+                    )
+                    # Attendee + action item counts (lightweight counts)
+                    atts = db.get_meeting_attendees(m["id"])
+                    acts = db.get_meeting_action_items(m["id"])
+                    notes_flag = (
+                        "📝 Notes linked"
+                        if (m.get("notes_url") or m.get("notes_native"))
+                        else "⚠️ No notes"
+                    )
+                    st.caption(
+                        f"👥 {len(atts)} attendee(s)  ·  "
+                        f"✅ {len(acts)} action item(s)  ·  {notes_flag}"
+                    )
+                with col2:
+                    if st.button(
+                        "📂 Open",
+                        key=f"mtg_open_{m['id']}",
+                        use_container_width=True,
+                    ):
+                        st.session_state["dialog_meeting_id"] = m["id"]
+                with col3:
+                    if st.button(
+                        "🗑️",
+                        key=f"mtg_list_del_{m['id']}",
+                    ):
+                        st.session_state[
+                            f"confirm_list_del_mtg_{m['id']}"
+                        ] = True
+
+                # ---- Delete confirmation (inline) ----
+                if st.session_state.get(
+                    f"confirm_list_del_mtg_{m['id']}", False
+                ):
+                    st.warning(
+                        f"⚠️ Permanently delete '{m['title']}'?"
+                    )
+                    col_yes, col_no = st.columns(2)
+                    with col_yes:
+                        if st.button(
+                            "✅ Yes, Delete",
+                            key=f"mtg_list_del_yes_{m['id']}",
+                        ):
+                            db.delete_meeting(m["id"])
+                            st.session_state.pop(
+                                f"confirm_list_del_mtg_{m['id']}", None
+                            )
+                            st.rerun()
+                    with col_no:
+                        if st.button(
+                            "❌ Cancel",
+                            key=f"mtg_list_del_no_{m['id']}",
+                        ):
+                            st.session_state.pop(
+                                f"confirm_list_del_mtg_{m['id']}", None
+                            )
+                            st.rerun()
+
+                st.divider()
+
+    # ---- Detail dialog (opened when a meeting is selected) ----
+    if st.session_state.get("dialog_meeting_id"):
+        _render_meeting_detail_dialog(
+            st.session_state["dialog_meeting_id"]
+        )
 
 
 # =========================================================
@@ -3938,6 +4727,101 @@ with tab_vendors:
 
 with tab_dashboard:
     st.header("🏠 Dashboard")
+
+    # ================================================
+    # MEETINGS WIDGETS
+    # ================================================
+    today_iso = datetime.now().date().isoformat()
+    week_end_iso = (datetime.now().date() + timedelta(days=7)).isoformat()
+
+    todays_meetings = db.get_meetings(
+        start_date=today_iso,
+        end_date=today_iso,
+    )
+    awaiting_meetings = db.get_meetings(awaiting_response=True)
+    no_notes_meetings = db.get_meetings(without_notes=True)
+    actions_due = db.get_action_items_due(
+        start_date=today_iso,
+        end_date=week_end_iso,
+    )
+
+    col_a, col_b, col_c, col_d = st.columns(4)
+    with col_a:
+        st.metric("📅 Today's Meetings", len(todays_meetings))
+    with col_b:
+        st.metric("⏳ Awaiting Response", len(awaiting_meetings))
+    with col_c:
+        st.metric("⚠️ Without Notes", len(no_notes_meetings))
+    with col_d:
+        st.metric("✅ Action Items Due (7d)", len(actions_due))
+
+    # ---- Expanded widgets ----
+    with st.expander("📅 Today's Meetings", expanded=bool(todays_meetings)):
+        if not todays_meetings:
+            st.caption("No meetings today.")
+        else:
+            for m in todays_meetings:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.markdown(f"**{m['title']}**")
+                    st.caption(
+                        f"👤 {m.get('executive_name') or '—'}  ·  "
+                        f"🕐 {m.get('meeting_time') or '—'}  ·  "
+                        f"{_meeting_status_label(m.get('status') or 'draft')}"
+                    )
+                with col2:
+                    if st.button("Open", key=f"dash_mtg_open_{m['id']}"):
+                        st.session_state["dialog_meeting_id"] = m["id"]
+                        st.rerun()
+
+    with st.expander("⏳ Meetings Awaiting Response", expanded=False):
+        if not awaiting_meetings:
+            st.caption("Nothing pending.")
+        else:
+            for m in awaiting_meetings:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.markdown(f"**{m['title']}**")
+                    st.caption(
+                        f"👤 {m.get('executive_name') or '—'}  ·  "
+                        f"📅 {fmt_date(m.get('meeting_date'))}  ·  "
+                        f"{_meeting_status_label(m.get('status') or 'draft')}"
+                    )
+                with col2:
+                    if st.button("Open", key=f"dash_mtg_awaiting_open_{m['id']}"):
+                        st.session_state["dialog_meeting_id"] = m["id"]
+                        st.rerun()
+
+    with st.expander("✅ Action Items Due (next 7 days)", expanded=bool(actions_due)):
+        if not actions_due:
+            st.caption("Nothing due.")
+        else:
+            for item in actions_due:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.markdown(f"**{item['description']}**")
+                    owner = (
+                        item.get("owner_contact_name")
+                        or item.get("owner_exec_name")
+                        or "—"
+                    )
+                    st.caption(
+                        f"📅 {fmt_date(item.get('due_date'))}  ·  "
+                        f"👤 {owner}  ·  "
+                        f"from *{item.get('meeting_title')}*"
+                    )
+                with col2:
+                    if st.button(
+                        "Open",
+                        key=f"dash_action_open_{item['id']}",
+                    ):
+                        st.session_state["dialog_meeting_id"] = item["meeting_id"]
+                        st.rerun()
+
+    st.divider()
+    # ================================================
+    # END MEETINGS WIDGETS
+    # ================================================
 
     # ---- Load everything once ----
     all_execs = db.get_all_executives(active_only=False)
