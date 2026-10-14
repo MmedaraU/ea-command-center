@@ -3853,15 +3853,90 @@ def _render_trip_edit_modal(trip_id_modal, country_list):
 # Module-level country list — used by both Tab 1 and the trip edit modal
 country_list = sorted([c.name for c in pycountry.countries])
 
-tab_names = ["🏠 Dashboard", "✈️ Trip Planner", "✈️ All Trips", "👥 Contacts",
-             "🏢 Companies", "🏢 Venues", "📚 Library"]
-tab_dash, tab1, tab2, tab4, tab3, tab5, tab6 = st.tabs(tab_names)
+tab_names = [
+    "🏠 Dashboard",
+    "📅 Meetings",
+    "🎉 Events",
+    "🎤 Speaking",
+    "✈️ Trip Planner",
+    "✈️ All Trips",
+    "👥 Contacts",
+    "🏢 Companies",
+    "🏢 Venues",
+    "🏢 Vendors",
+    "📚 Library",
+]
+(
+    tab_dashboard,
+    tab_meetings,
+    tab_events,
+    tab_speaking,
+    tab_trip_planner,
+    tab_all_trips,
+    tab_contacts,
+    tab_companies,
+    tab_venues,
+    tab_vendors,
+    tab_library,
+) = st.tabs(tab_names)
+
+
+# =========================================================
+# TAB: MEETINGS (placeholder — built in Phase 2)
+# =========================================================
+
+with tab_meetings:
+    st.header("📅 Meetings")
+    st.info(
+        "The Meetings module is coming in **Phase 2**. "
+        "It will track meeting records, attendees, decisions, and action items, "
+        "and link out to Google Calendar and Docs."
+    )
+
+
+# =========================================================
+# TAB: EVENTS (placeholder — built in Phase 4)
+# =========================================================
+
+with tab_events:
+    st.header("🎉 Events")
+    st.info(
+        "The Events module is coming in **Phase 4**. "
+        "It will track event records, guest lists, RSVP imports from Google Forms, "
+        "and post-event debriefs."
+    )
+
+
+# =========================================================
+# TAB: SPEAKING (placeholder — built in Phase 6)
+# =========================================================
+
+with tab_speaking:
+    st.header("🎤 Speaking Engagements")
+    st.info(
+        "The Speaking Engagements module is coming in **Phase 6**. "
+        "It will track the pipeline from invite to post-event follow-up, "
+        "including CFP submissions, negotiation, deliverables, and logistics."
+    )
+
+
+# =========================================================
+# TAB: VENDORS (placeholder — built in Phase 5)
+# =========================================================
+
+with tab_vendors:
+    st.header("🏢 Vendors")
+    st.info(
+        "The Vendors module is coming in **Phase 5**. "
+        "It will track a reusable vendor directory plus per-event engagements, "
+        "contracts, and payments."
+    )
 
 # =========================================================
 # TAB: DASHBOARD
 # =========================================================
 
-with tab_dash:
+with tab_dashboard:
     st.header("🏠 Dashboard")
 
     # ---- Load everything once ----
@@ -4053,7 +4128,7 @@ with tab_dash:
 # TAB: TRIP PLANNER
 # =========================================================
 
-with tab1:
+with tab_trip_planner:
     if not profile:
         st.info("👤 **Add an executive in the sidebar** to start planning a trip. "
                 "The other tabs (Companies, Contacts, Venues, Library) work without one.")
@@ -5374,7 +5449,7 @@ with tab1:
 # TAB: ALL TRIPS
 # =========================================================
 
-with tab2:
+with tab_all_trips:
     col_title, col_from_tpl = st.columns([5, 1.4], vertical_alignment="bottom")
     with col_from_tpl:
         if st.button(
@@ -5704,7 +5779,7 @@ with tab2:
 # TAB: COMPANIES
 # =========================================================
 
-with tab3:
+with tab_companies:
     with st.expander("➕ Add New Company", expanded=False):
         with st.form("add_company_manager_form"):
             new_name = st.text_input("Company Name*", key="mgr_comp_name")
@@ -5870,7 +5945,7 @@ with tab3:
 # TAB: CONTACTS
 # =========================================================
 
-with tab4:
+with tab_contacts:
     st.caption(
         "Manage contacts: local support, staff, partners, and other. "
         "These appear in the travel pack and can be assigned to specific "
@@ -6458,7 +6533,7 @@ with tab4:
 # TAB: VENUES
 # =========================================================
 
-with tab5:
+with tab_venues:
     st.caption(
         "Manage reusable venues. Each venue can be attached to specific "
         "itinerary items."
@@ -6720,7 +6795,7 @@ with tab5:
 # TAB: LIBRARY
 # =========================================================
 
-with tab6:
+with tab_library:
     st.caption("Reusable content: destination guides, visa rules, checklists, "
                "packing templates, and hospitals.")
 

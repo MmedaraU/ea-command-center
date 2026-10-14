@@ -119,12 +119,16 @@ def migrate_db():
         if _table_exists(c, "contacts"):
             c.execute("PRAGMA table_info(contacts)")
             existing_contact_cols = [row[1] for row in c.fetchall()]
-            if "type" not in existing_contact_cols:
-                c.execute(
-                    "ALTER TABLE contacts ADD COLUMN type TEXT DEFAULT 'Local Support'"
-                )
-            if "city" not in existing_contact_cols:
-                c.execute("ALTER TABLE contacts ADD COLUMN city TEXT")
+            for col, ddl in [
+                ("type", "TEXT DEFAULT 'Local Support'"),
+                ("city", "TEXT"),
+                ("last_contacted_at", "TEXT"),
+                ("last_channel", "TEXT"),
+                ("next_action", "TEXT"),
+                ("next_action_date", "TEXT"),
+            ]:
+                if col not in existing_contact_cols:
+                    c.execute(f"ALTER TABLE contacts ADD COLUMN {col} {ddl}")
 
         # --- Support tables that may or may not exist yet ---
         c.execute("""CREATE TABLE IF NOT EXISTS executive_passports (
@@ -598,6 +602,341 @@ def init_db():
                 c.execute(idx)
             except sqlite3.OperationalError:
                 # Column doesn't exist yet — the migration script will fix it.
+                pass
+
+        # =========================================================
+        # EA COMMAND CENTER — Phase 1 new tables
+        # =========================================================
+
+        # --- Meetings ---
+        c.execute("""CREATE TABLE IF NOT EXISTS meetings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            exec_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            meeting_type TEXT,
+            status TEXT DEFAULT 'draft',
+            meeting_date TEXT,
+            meeting_time TEXT,
+            duration_minutes INTEGER,
+            location TEXT,
+            video_link TEXT,
+            calendar_event_url TEXT,
+            agenda TEXT,
+            notes_native TEXT,
+            notes_url TEXT,
+            notes_label TEXT,
+            follow_up_date TEXT,
+            linked_trip_id INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (exec_id) REFERENCES executives(id) ON DELETE CASCADE,
+            FOREIGN KEY (linked_trip_id) REFERENCES trips(id) ON DELETE SET NULL
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS meeting_attendees (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            meeting_id INTEGER NOT NULL,
+            contact_id INTEGER NOT NULL,
+            is_internal INTEGER DEFAULT 0,
+            is_vip INTEGER DEFAULT 0,
+            role TEXT,
+            assistant_contact_id INTEGER,
+            status TEXT DEFAULT 'pending',
+            response_notes TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE,
+            FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE CASCADE,
+            FOREIGN KEY (assistant_contact_id) REFERENCES contacts(id) ON DELETE SET NULL
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS meeting_action_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            meeting_id INTEGER NOT NULL,
+            description TEXT NOT NULL,
+            owner_contact_id INTEGER,
+            owner_exec_id INTEGER,
+            due_date TEXT,
+            status TEXT DEFAULT 'not_started',
+            pushed_to_ticktick INTEGER DEFAULT 0,
+            ticktick_id TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE,
+            FOREIGN KEY (owner_contact_id) REFERENCES contacts(id) ON DELETE SET NULL,
+            FOREIGN KEY (owner_exec_id) REFERENCES executives(id) ON DELETE SET NULL
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS meeting_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            meeting_id INTEGER NOT NULL,
+            decision TEXT NOT NULL,
+            made_by TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+        )""")
+
+        # --- Events ---
+        c.execute("""CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            exec_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            objective TEXT,
+            event_type TEXT,
+            status TEXT DEFAULT 'planning',
+            event_date TEXT,
+            start_time TEXT,
+            end_time TEXT,
+            venue_id INTEGER,
+            location_override TEXT,
+            headcount INTEGER,
+            budget_total REAL DEFAULT 0,
+            currency TEXT DEFAULT 'USD',
+            calendar_event_url TEXT,
+            run_of_show_url TEXT,
+            logistics_url TEXT,
+            notes_native TEXT,
+            debrief_notes TEXT,
+            rsvp_form_url TEXT,
+            linked_trip_id INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (exec_id) REFERENCES executives(id) ON DELETE CASCADE,
+            FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE SET NULL,
+            FOREIGN KEY (linked_trip_id) REFERENCES trips(id) ON DELETE SET NULL
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS event_guests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER NOT NULL,
+            contact_id INTEGER,
+            guest_name TEXT,
+            guest_email TEXT,
+            invite_status TEXT DEFAULT 'not_invited',
+            plus_ones INTEGER DEFAULT 0,
+            plus_one_names TEXT,
+            dietary TEXT,
+            allergy_details TEXT,
+            accessibility TEXT,
+            badge_name TEXT,
+            seating_preference TEXT,
+            rsvp_timestamp TEXT,
+            rsvp_source TEXT,
+            checked_in_at TEXT,
+            notes TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
+            FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE SET NULL
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS event_budget_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER NOT NULL,
+            category TEXT,
+            description TEXT,
+            estimated_amount REAL DEFAULT 0,
+            actual_amount REAL DEFAULT 0,
+            paid_amount REAL DEFAULT 0,
+            vendor_engagement_id INTEGER,
+            status TEXT DEFAULT 'estimated',
+            receipt_urls TEXT,
+            invoice_urls TEXT,
+            notes TEXT,
+            sort_order INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+        )""")
+
+        # --- Vendors ---
+        c.execute("""CREATE TABLE IF NOT EXISTS vendors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            category TEXT,
+            contact_id INTEGER,
+            email TEXT,
+            phone TEXT,
+            website TEXT,
+            address TEXT,
+            city TEXT,
+            country TEXT,
+            notes TEXT,
+            preferred INTEGER DEFAULT 0,
+            rating INTEGER,
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_used_at TEXT,
+            FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE SET NULL
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS vendor_engagements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER NOT NULL,
+            vendor_id INTEGER NOT NULL,
+            category TEXT,
+            status TEXT DEFAULT 'shortlisted',
+            quote_amount REAL,
+            agreed_amount REAL,
+            currency TEXT DEFAULT 'USD',
+            contract_status TEXT DEFAULT 'not_sent',
+            contract_url TEXT,
+            deposit_amount REAL,
+            deposit_due_date TEXT,
+            deposit_paid_date TEXT,
+            balance_amount REAL,
+            balance_due_date TEXT,
+            balance_paid_date TEXT,
+            payment_terms TEXT,
+            notes TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
+            FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS vendor_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vendor_engagement_id INTEGER NOT NULL,
+            amount REAL NOT NULL,
+            currency TEXT DEFAULT 'USD',
+            due_date TEXT,
+            paid_date TEXT,
+            method TEXT,
+            reference TEXT,
+            notes TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (vendor_engagement_id) REFERENCES vendor_engagements(id) ON DELETE CASCADE
+        )""")
+
+        # --- Speaking Engagements ---
+        c.execute("""CREATE TABLE IF NOT EXISTS speaking_engagements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            exec_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            organizer_contact_id INTEGER,
+            organizer_name TEXT,
+            engagement_type TEXT,
+            format TEXT,
+            status TEXT DEFAULT 'invited',
+            engagement_date TEXT,
+            engagement_time TEXT,
+            duration TEXT,
+            location TEXT,
+            timezone TEXT,
+            audience TEXT,
+            topic TEXT,
+            fee_offered REAL,
+            fee_agreed REAL,
+            currency TEXT DEFAULT 'USD',
+            travel_covered INTEGER DEFAULT 0,
+            accommodation_covered INTEGER DEFAULT 0,
+            recording_rights TEXT,
+            exclusivity TEXT,
+            calendar_event_url TEXT,
+            notes_url TEXT,
+            notes_native TEXT,
+            linked_trip_id INTEGER,
+            promoted INTEGER DEFAULT 0,
+            thank_you_sent INTEGER DEFAULT 0,
+            thank_you_date TEXT,
+            feedback_received TEXT,
+            feedback_rating INTEGER,
+            testimonial TEXT,
+            testimonial_permission INTEGER DEFAULT 0,
+            recording_received INTEGER DEFAULT 0,
+            recording_url TEXT,
+            would_repeat INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (exec_id) REFERENCES executives(id) ON DELETE CASCADE,
+            FOREIGN KEY (organizer_contact_id) REFERENCES contacts(id) ON DELETE SET NULL,
+            FOREIGN KEY (linked_trip_id) REFERENCES trips(id) ON DELETE SET NULL
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS speaking_deliverables (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            engagement_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            owner TEXT,
+            due_date TEXT,
+            status TEXT DEFAULT 'not_started',
+            file_url TEXT,
+            submitted_to_organizer INTEGER DEFAULT 0,
+            organizer_feedback TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (engagement_id) REFERENCES speaking_engagements(id) ON DELETE CASCADE
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS speaking_cfps (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            engagement_id INTEGER NOT NULL,
+            cfp_url TEXT,
+            submission_deadline TEXT,
+            submission_date TEXT,
+            proposal_title TEXT,
+            abstract TEXT,
+            proposal_doc_url TEXT,
+            status TEXT DEFAULT 'draft',
+            decision_date TEXT,
+            notes TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (engagement_id) REFERENCES speaking_engagements(id) ON DELETE CASCADE
+        )""")
+
+        # --- Communications ---
+        c.execute("""CREATE TABLE IF NOT EXISTS communications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contact_id INTEGER NOT NULL,
+            exec_id INTEGER,
+            comm_date TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            direction TEXT DEFAULT 'outbound',
+            summary TEXT,
+            next_action TEXT,
+            next_action_date TEXT,
+            linked_to_type TEXT,
+            linked_to_id INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE CASCADE,
+            FOREIGN KEY (exec_id) REFERENCES executives(id) ON DELETE SET NULL
+        )""")
+
+        # --- Indexes for new tables ---
+        for idx in [
+            "CREATE INDEX IF NOT EXISTS idx_meetings_exec ON meetings(exec_id)",
+            "CREATE INDEX IF NOT EXISTS idx_meetings_status ON meetings(status)",
+            "CREATE INDEX IF NOT EXISTS idx_meetings_date ON meetings(meeting_date)",
+            "CREATE INDEX IF NOT EXISTS idx_meeting_attendees_meeting ON meeting_attendees(meeting_id)",
+            "CREATE INDEX IF NOT EXISTS idx_meeting_attendees_contact ON meeting_attendees(contact_id)",
+            "CREATE INDEX IF NOT EXISTS idx_meeting_actions_meeting ON meeting_action_items(meeting_id)",
+            "CREATE INDEX IF NOT EXISTS idx_meeting_actions_due ON meeting_action_items(due_date)",
+            "CREATE INDEX IF NOT EXISTS idx_meeting_decisions_meeting ON meeting_decisions(meeting_id)",
+            "CREATE INDEX IF NOT EXISTS idx_events_exec ON events(exec_id)",
+            "CREATE INDEX IF NOT EXISTS idx_events_status ON events(status)",
+            "CREATE INDEX IF NOT EXISTS idx_events_date ON events(event_date)",
+            "CREATE INDEX IF NOT EXISTS idx_event_guests_event ON event_guests(event_id)",
+            "CREATE INDEX IF NOT EXISTS idx_event_guests_contact ON event_guests(contact_id)",
+            "CREATE INDEX IF NOT EXISTS idx_event_guests_status ON event_guests(invite_status)",
+            "CREATE INDEX IF NOT EXISTS idx_event_budget_event ON event_budget_items(event_id)",
+            "CREATE INDEX IF NOT EXISTS idx_vendors_name ON vendors(name)",
+            "CREATE INDEX IF NOT EXISTS idx_vendors_category ON vendors(category)",
+            "CREATE INDEX IF NOT EXISTS idx_vendors_active ON vendors(is_active)",
+            "CREATE INDEX IF NOT EXISTS idx_vendor_engagements_event ON vendor_engagements(event_id)",
+            "CREATE INDEX IF NOT EXISTS idx_vendor_engagements_vendor ON vendor_engagements(vendor_id)",
+            "CREATE INDEX IF NOT EXISTS idx_vendor_engagements_status ON vendor_engagements(status)",
+            "CREATE INDEX IF NOT EXISTS idx_vendor_payments_engagement ON vendor_payments(vendor_engagement_id)",
+            "CREATE INDEX IF NOT EXISTS idx_vendor_payments_due ON vendor_payments(due_date)",
+            "CREATE INDEX IF NOT EXISTS idx_speaking_exec ON speaking_engagements(exec_id)",
+            "CREATE INDEX IF NOT EXISTS idx_speaking_status ON speaking_engagements(status)",
+            "CREATE INDEX IF NOT EXISTS idx_speaking_date ON speaking_engagements(engagement_date)",
+            "CREATE INDEX IF NOT EXISTS idx_speaking_deliv_engagement ON speaking_deliverables(engagement_id)",
+            "CREATE INDEX IF NOT EXISTS idx_speaking_deliv_due ON speaking_deliverables(due_date)",
+            "CREATE INDEX IF NOT EXISTS idx_speaking_cfps_engagement ON speaking_cfps(engagement_id)",
+            "CREATE INDEX IF NOT EXISTS idx_speaking_cfps_deadline ON speaking_cfps(submission_deadline)",
+            "CREATE INDEX IF NOT EXISTS idx_comms_contact ON communications(contact_id)",
+            "CREATE INDEX IF NOT EXISTS idx_comms_date ON communications(comm_date)",
+            "CREATE INDEX IF NOT EXISTS idx_comms_next_action ON communications(next_action_date)",
+        ]:
+            try:
+                c.execute(idx)
+            except sqlite3.OperationalError:
                 pass
 
         conn.commit()
