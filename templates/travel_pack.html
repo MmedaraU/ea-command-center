@@ -1,0 +1,1145 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <title>Travel Pack – {{ trip.purpose }}</title>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap"
+    rel="stylesheet">
+  <style>
+    /* ============================================================
+       LIGHT THEME (default)
+       ============================================================ */
+    :root {
+      /* Surfaces */
+      --bg: #fafafa;
+      --card: #ffffff;
+      --card-alt: #f8fafc;
+      --card-edge: #e2e8f0;
+      --card-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+      --card-shadow-hover: 0 4px 20px rgba(0, 0, 0, 0.06);
+
+      /* Text */
+      --ink: #0f172a;
+      --ink-body: #1e293b;
+      --ink-soft: #475569;
+      --ink-muted: #94a3b8;
+
+      /* Lines and rules */
+      --rule: #e2e8f0;
+      --rule-strong: #cbd5e1;
+      --th-bg: #f1f5f9;
+
+      /* Accent (blue) */
+      --accent: #3b82f6;
+      --accent-soft: #dbeafe;
+      --accent-ink: #1e40af;
+
+      /* Semantic */
+      --success: #16a34a;
+      --danger: #dc2626;
+      --warning: #d97706;
+      --strike: #94a3b8;
+    }
+
+    /* ============================================================
+       DARK THEME (dark green)
+       Auto-applies when the OS/browser prefers dark.
+       ============================================================ */
+    @media (prefers-color-scheme: dark) {
+      :root {
+        /* Surfaces — deep forest green stack */
+        --bg: #0a1a12;
+        --card: #12281b;
+        --card-alt: #0f2317;
+        --card-edge: #1e3d2a;
+        --card-shadow: 0 2px 14px rgba(0, 0, 0, 0.45);
+        --card-shadow-hover: 0 4px 22px rgba(0, 0, 0, 0.55);
+
+        /* Text — light with a green tint */
+        --ink: #e8f5ec;
+        --ink-body: #c9e5d2;
+        --ink-soft: #86c79a;
+        --ink-muted: #5e8a6d;
+
+        /* Lines and rules */
+        --rule: #1e3d2a;
+        --rule-strong: #2b5a3f;
+        --th-bg: #0f2a1b;
+
+        /* Accent — bright green on the dark surface */
+        --accent: #4ade80;
+        --accent-soft: #1a3d27;
+        --accent-ink: #86efac;
+
+        /* Semantic */
+        --success: #4ade80;
+        --danger: #f87171;
+        --warning: #fbbf24;
+        --strike: #5e8a6d;
+      }
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      min-height: 100%;
+    }
+
+    body {
+      font-family: 'DM Sans', sans-serif;
+      color: var(--ink-body);
+      background: var(--bg);
+      padding: 24px 16px;
+      line-height: 1.45;
+      font-size: 0.92rem;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      transition: background-color 0.2s ease, color 0.2s ease;
+    }
+
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    /* ---------- Headings ---------- */
+    h1,
+    h2,
+    h3,
+    h4 {
+      font-family: 'DM Serif Display', serif;
+      font-weight: 400;
+      color: var(--ink);
+      line-height: 1.2;
+    }
+
+    h1 {
+      font-size: 2rem;
+      padding-bottom: 6px;
+      margin-bottom: 4px;
+      letter-spacing: -0.3px;
+    }
+
+    h2 {
+      font-size: 1.25rem;
+      margin-top: 0;
+      margin-bottom: 10px;
+      padding-bottom: 4px;
+      border-bottom: 2px solid var(--rule);
+      color: var(--ink);
+    }
+
+    h3 {
+      font-size: 1.05rem;
+      margin: 12px 0 6px;
+    }
+
+    /* ---------- Cards ---------- */
+    .card {
+      background: var(--card);
+      border-radius: 10px;
+      box-shadow: var(--card-shadow);
+      padding: 16px 20px;
+      margin-bottom: 14px;
+      transition: background-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .card:hover {
+      box-shadow: var(--card-shadow-hover);
+    }
+
+    .subhead {
+      color: var(--ink-soft);
+      font-size: 0.9rem;
+      margin-top: 0;
+      margin-bottom: 12px;
+    }
+
+    /* ---------- Layout helpers ---------- */
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 22px;
+      margin-bottom: 8px;
+    }
+
+    .col {
+      flex: 1 1 180px;
+    }
+
+    .label {
+      font-weight: 600;
+      color: var(--ink-soft);
+      display: inline-block;
+      min-width: 110px;
+    }
+
+    .value {
+      color: var(--ink);
+    }
+
+    /* ---------- Tables ---------- */
+    .table-wrap {
+      width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      margin: 10px 0;
+    }
+
+    .table-wrap table {
+      min-width: 520px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.86rem;
+    }
+
+    th {
+      background: var(--th-bg);
+      font-weight: 600;
+      text-align: left;
+      padding: 7px 10px;
+      border-bottom: 2px solid var(--rule-strong);
+      color: var(--ink);
+      white-space: nowrap;
+    }
+
+    td {
+      padding: 7px 10px;
+      border-bottom: 1px solid var(--rule);
+      vertical-align: top;
+      color: var(--ink-body);
+    }
+
+    /* ---------- Badges ---------- */
+    .badge {
+      background: var(--accent);
+      color: #ffffff;
+      padding: 2px 10px;
+      border-radius: 14px;
+      font-size: 0.72rem;
+      font-weight: 500;
+      display: inline-block;
+    }
+
+    .badge-green {
+      background: var(--success);
+    }
+
+    .badge-amber {
+      background: var(--warning);
+    }
+
+    .badge-gray {
+      background: var(--ink-muted);
+    }
+
+    /* ---------- Receipts ---------- */
+    .receipt-thumb {
+      max-width: 90px;
+      max-height: 90px;
+      border-radius: 6px;
+      border: 1px solid var(--card-edge);
+      object-fit: cover;
+    }
+
+    .receipt-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    .receipt-item {
+      text-align: center;
+      font-size: 0.8rem;
+    }
+
+    .receipt-item img {
+      display: block;
+      margin-bottom: 3px;
+    }
+
+    /* ---------- Contacts ---------- */
+    .contact-card {
+      background: var(--card-alt);
+      padding: 10px 14px;
+      border-radius: 8px;
+      border-left: 4px solid var(--accent);
+      margin-bottom: 8px;
+    }
+
+    .contact-name {
+      font-weight: 600;
+      font-size: 0.95rem;
+      color: var(--ink);
+    }
+
+    .contact-role {
+      color: var(--ink-soft);
+      font-size: 0.85rem;
+    }
+
+    /* ---------- Delegation ---------- */
+    .delegation-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .delegation-card {
+      background: var(--card-alt);
+      padding: 10px 14px;
+      border-radius: 8px;
+      flex: 1 1 160px;
+      border: 1px solid var(--card-edge);
+      font-size: 0.88rem;
+    }
+
+    .delegation-card strong {
+      display: block;
+      color: var(--ink);
+    }
+
+    /* ---------- Venue / section blocks ---------- */
+    .venue-block {
+      margin-bottom: 14px;
+      padding-bottom: 10px;
+    }
+
+    .venue-block:not(:last-child) {
+      border-bottom: 1px solid var(--rule);
+    }
+
+    .venue-block h3 {
+      margin-top: 0;
+      margin-bottom: 6px;
+      font-size: 1.05rem;
+    }
+
+    /* ---------- Packing / checklist 2-column grid ---------- */
+    .pack-items-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 2px 24px;
+      margin-top: 4px;
+    }
+
+    .pack-item {
+      flex: 1 1 calc(50% - 12px);
+      min-width: 200px;
+      padding: 2px 0;
+      font-size: 0.88rem;
+      line-height: 1.5;
+      color: var(--ink-body);
+    }
+
+    .pack-item--packed {
+      color: var(--strike);
+    }
+
+    .pack-category-title {
+      margin-top: 10px;
+      margin-bottom: 2px;
+      font-weight: 600;
+      color: var(--ink-soft);
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    /* ---------- Utility ---------- */
+    .text-muted {
+      color: var(--ink-muted);
+      font-size: 0.85rem;
+    }
+
+    a {
+      color: var(--accent-ink);
+      text-decoration: underline;
+    }
+
+    a:hover {
+      color: var(--accent);
+    }
+
+    .footer-note {
+      color: var(--ink-muted);
+      font-size: 0.82rem;
+      margin-top: 16px;
+      border-top: 1px solid var(--rule);
+      padding-top: 10px;
+      text-align: center;
+    }
+
+    .print-only {
+      display: none;
+    }
+
+    /* ================================================================
+       RESPONSIVE — Tablet (max 900px)
+       ================================================================ */
+    @media (max-width: 900px) {
+      body {
+        padding: 18px 14px;
+        font-size: 0.9rem;
+      }
+
+      h1 {
+        font-size: 1.75rem;
+      }
+
+      h2 {
+        font-size: 1.15rem;
+      }
+
+      .card {
+        padding: 14px 16px;
+        margin-bottom: 12px;
+      }
+
+      .col {
+        flex: 1 1 220px;
+      }
+
+      .container {
+        max-width: 100%;
+      }
+    }
+
+    /* ================================================================
+       RESPONSIVE — Phone (max 640px)
+       ================================================================ */
+    @media (max-width: 640px) {
+      body {
+        padding: 12px 10px;
+        font-size: 0.88rem;
+      }
+
+      h1 {
+        font-size: 1.45rem;
+      }
+
+      h2 {
+        font-size: 1.1rem;
+      }
+
+      h3 {
+        font-size: 1rem;
+      }
+
+      .card {
+        padding: 12px 14px;
+        border-radius: 8px;
+        margin-bottom: 10px;
+      }
+
+      /* Stack the subhead vertically */
+      .subhead {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .subhead .label {
+        min-width: 0;
+        display: inline;
+      }
+
+      .row {
+        gap: 8px 12px;
+      }
+
+      .col {
+        flex: 1 1 100%;
+      }
+
+      .delegation-card {
+        flex: 1 1 100%;
+      }
+
+      .contact-card {
+        flex: 1 1 100%;
+      }
+
+      .table-wrap table {
+        min-width: 480px;
+        font-size: 0.82rem;
+      }
+
+      th,
+      td {
+        padding: 6px 8px;
+      }
+
+      /* Packing/checklist items go single-column */
+      .pack-item {
+        flex: 1 1 100%;
+        min-width: 0;
+      }
+
+      .receipt-thumb {
+        max-width: 70px;
+        max-height: 70px;
+      }
+
+      .receipt-list {
+        gap: 8px;
+      }
+
+      .delegation-grid {
+        gap: 8px;
+      }
+
+      .footer-note {
+        font-size: 0.78rem;
+      }
+    }
+
+    /* ================================================================
+       Very narrow (max 400px)
+       ================================================================ */
+    @media (max-width: 400px) {
+      body {
+        font-size: 0.85rem;
+      }
+
+      h1 {
+        font-size: 1.25rem;
+      }
+
+      .card {
+        padding: 10px 12px;
+      }
+
+      .table-wrap table {
+        min-width: 440px;
+        font-size: 0.78rem;
+      }
+    }
+
+    /* ================================================================
+       Print / PDF — always light theme, regardless of OS preference
+       ================================================================ */
+    @media print {
+
+      html,
+      body {
+        min-height: 0;
+        background: #ffffff !important;
+      }
+
+      /* Re-declare all light-theme tokens so the PDF ignores
+         prefers-color-scheme: dark entirely. */
+      :root {
+        --bg: #ffffff;
+        --card: #ffffff;
+        --card-alt: #f8fafc;
+        --card-edge: #e2e8f0;
+        --card-shadow: none;
+        --card-shadow-hover: none;
+
+        --ink: #0f172a;
+        --ink-body: #1e293b;
+        --ink-soft: #475569;
+        --ink-muted: #94a3b8;
+
+        --rule: #e2e8f0;
+        --rule-strong: #cbd5e1;
+        --th-bg: #f1f5f9;
+
+        --accent: #3b82f6;
+        --accent-soft: #dbeafe;
+        --accent-ink: #1e40af;
+
+        --success: #16a34a;
+        --danger: #dc2626;
+        --warning: #d97706;
+        --strike: #94a3b8;
+      }
+
+      body {
+        padding: 0.4in;
+        font-size: 0.9rem;
+      }
+
+      .card {
+        box-shadow: none;
+        border: 1px solid var(--card-edge);
+        page-break-inside: avoid;
+      }
+
+      .card:hover {
+        box-shadow: none;
+      }
+
+      /* Keep 2-column packing lists in the PDF */
+      .pack-item {
+        flex: 1 1 calc(50% - 12px);
+      }
+
+      .table-wrap {
+        overflow: visible;
+      }
+
+      .table-wrap table {
+        min-width: 0;
+      }
+
+      .print-only {
+        display: block;
+      }
+
+      .no-print {
+        display: none;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+
+    <!-- ============================================================
+         COVER / TRIP OVERVIEW
+         ============================================================ -->
+    <div class="card">
+      <h1>{{ trip.purpose }}</h1>
+      <div class="subhead">
+        <span><span class="label">From:</span> {{ trip.departure_city or 'N/A' }}{% if trip.departure_region %}, {{
+          trip.departure_region }}{% endif %}{% if trip.departure_country %}, {{ trip.departure_country }}{% endif
+          %}</span>
+        <span><span class="label">To:</span> {{ stops[0].city if stops else 'N/A' }}</span>
+        <span><span class="label">Dates:</span> {{ trip.start_date[:10] }} – {{ trip.end_date[:10] }}</span>
+        <span><span class="label">Status:</span> {{ trip.status | title }}</span>
+      </div>
+      <div class="row">
+        <div class="col"><span class="label">Budget:</span> {{ "%.2f"|format(trip.budget or 0) }} {{ trip.base_currency
+          }}</div>
+        <div class="col"><span class="label">Total Spent:</span> {{ "%.2f"|format(total_spent) }} {{ trip.base_currency
+          }}</div>
+        <div class="col"><span class="label">Confirmed:</span> {{ "%.2f"|format(confirmed_spent) }} {{
+          trip.base_currency }}</div>
+        <div class="col"><span class="label">Estimated:</span> {{ "%.2f"|format(estimated_spent) }} {{
+          trip.base_currency }}</div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         RECEIPT UPLOAD FOLDER (optional)
+         ============================================================ -->
+    {% if trip.receipt_upload_folder_url %}
+    <div class="card" style="border-left: 4px solid var(--success);">
+      <h2 style="margin-top: 0;">📥 Upload Receipts</h2>
+      <p style="margin-bottom: 8px;">
+        Delegation members: please upload your receipts (photos or PDFs) to the
+        shared folder below. The trip organizer will attach them to the expense report.
+      </p>
+      <p style="margin-bottom: 0;">
+        <a href="{{ trip.receipt_upload_folder_url }}" target="_blank" style="font-weight: 600; word-break: break-all;">
+          {{ trip.receipt_upload_folder_url }}
+        </a>
+      </p>
+    </div>
+    {% endif %}
+
+    <!-- ============================================================
+         DELEGATION
+         ============================================================ -->
+    {% if delegation %}
+    <div class="card">
+      <h2>👥 Delegation</h2>
+      <div class="delegation-grid">
+        {% for member in delegation %}
+        <div class="delegation-card">
+          <strong>{{ member.name }}</strong>
+          <span class="text-muted">{{ member.role or '' }}</span>
+          <div>{{ member.email or '' }}</div>
+          <div>{{ member.phone or '' }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- ============================================================
+         ROUTE (STOPS)
+         ============================================================ -->
+    {% if stops %}
+    <div class="card">
+      <h2>📍 Route</h2>
+      <ul>
+        {% for stop in stops %}
+        <li>
+          <strong>{{ stop.city }}</strong>
+          ({{ stop.country or '' }}{% if stop.region %}, {{ stop.region }}{% endif %})
+          – {{ stop.start_date[:10] }} to {{ stop.end_date[:10] }}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    <!-- ============================================================
+         ITINERARY (FLIGHTS & TRANSPORT)
+         ============================================================ -->
+    {% set itinerary_items = items | selectattr('item_type', 'in', ['Flight', 'Transport']) | list %}
+    {% if itinerary_items %}
+    <div class="card">
+      <h2>✈️ Itinerary</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Date/Time</th>
+              <th>Type</th>
+              <th>Description</th>
+              <th>Location</th>
+              <th>Cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in itinerary_items %}
+            <tr>
+              <td>{{ item.formatted_time }}</td>
+              <td>{{ item.item_type | title }}</td>
+              <td>
+                {{ item.description }}<br>
+                <small class="text-muted">Conf: {{ item.confirmation_code or 'N/A' }}</small>
+              </td>
+              <td>{{ item.location or 'N/A' }}</td>
+              <td>{{ "%.2f"|format(item.cost or 0) }} {{ item.cost_currency or 'USD' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- ============================================================
+         HOTELS
+         ============================================================ -->
+    {% set hotels = items | selectattr('item_type', 'equalto', 'Hotel') | list %}
+    {% if hotels %}
+    <div class="card">
+      <h2>🏨 Hotels</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Check-in / Check-out</th>
+              <th>Hotel</th>
+              <th>Location</th>
+              <th>Confirmation</th>
+              <th>Cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for hotel in hotels %}
+            <tr>
+              <td>{{ hotel.formatted_time }}</td>
+              <td>{{ hotel.description }}</td>
+              <td>{{ hotel.location or 'N/A' }}</td>
+              <td>{{ hotel.confirmation_code or 'N/A' }}</td>
+              <td>{{ "%.2f"|format(hotel.cost or 0) }} {{ hotel.cost_currency or 'USD' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- ============================================================
+         AGENDA
+         ============================================================ -->
+    {% set agenda_items = items | selectattr('item_type', 'in', ['Meeting', 'Conference', 'Dinner', 'Site Visit',
+    'Tour', 'Activity']) | list %}
+    {% if agenda_items %}
+    <div class="card">
+      <h2>📋 Agenda</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Date/Time</th>
+              <th>Type</th>
+              <th>Description</th>
+              <th>Location</th>
+              <th>Venue</th>
+              <th>Attendees</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in agenda_items %}
+            <tr>
+              <td>{{ item.formatted_time }}</td>
+              <td>{{ item.item_type | title }}</td>
+              <td>
+                {{ item.description }}<br>
+                <small class="text-muted">Conf: {{ item.confirmation_code or 'N/A' }}</small>
+              </td>
+              <td>{{ item.location or 'N/A' }}</td>
+              <td>{{ item.venue_name or '—' }}</td>
+              <td>
+                {% if item.participants %}{{ item.participants | join(', ') }}{% else %}—{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- ============================================================
+         VENUES
+         ============================================================ -->
+    {% if trip_venues %}
+    <div class="card">
+      <h2>🏢 Venues</h2>
+      {% for v in trip_venues %}
+      <div class="venue-block">
+        <h3>{{ v.name }}</h3>
+        {% if v.address %}
+        <div><span class="label">Address:</span> {{ v.address }}</div>
+        {% endif %}
+        {% if v.city or v.country %}
+        <div>
+          <span class="label">Location:</span>
+          {{ v.city or '' }}{% if v.city and v.country %}, {% endif %}{{ v.country or '' }}
+        </div>
+        {% endif %}
+        {% if v.wifi_ssid or v.wifi_password %}
+        <div>
+          <span class="label">WiFi:</span>
+          {{ v.wifi_ssid or '' }}{% if v.wifi_password %} / {{ v.wifi_password }}{% endif %}
+        </div>
+        {% endif %}
+        {% if v.badge_info %}
+        <div><span class="label">Badge Info:</span> {{ v.badge_info }}</div>
+        {% endif %}
+        {% if v.dress_code_notes %}
+        <div><span class="label">Dress Code:</span> {{ v.dress_code_notes }}</div>
+        {% endif %}
+        {% if v.notes %}
+        <div><span class="label">Notes:</span> {{ v.notes }}</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- ============================================================
+         EMERGENCY INFO
+         ============================================================ -->
+    {% if emergency_hospitals or trip_emergency_numbers %}
+    <div class="card">
+      <h2>🚨 Emergency Info</h2>
+
+      {% if trip_emergency_numbers %}
+      <h3 style="margin-top: 8px; margin-bottom: 8px; font-size: 1.15rem;">Emergency Services</h3>
+      {% for loc, nums in trip_emergency_numbers.items() %}
+      <div style="margin-bottom: 16px;">
+        <strong>{{ loc }}</strong>
+        <div style="margin-left: 16px;">
+          {% if nums.police %}<div>🚓 Police: {{ nums.police }}</div>{% endif %}
+          {% if nums.ambulance %}<div>🚑 Ambulance: {{ nums.ambulance }}</div>{% endif %}
+          {% if nums.fire %}<div>🚒 Fire: {{ nums.fire }}</div>{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+      {% endif %}
+
+      {% if emergency_hospitals %}
+      <h3 style="margin-top: 16px; margin-bottom: 8px; font-size: 1.15rem;">Nearest Hospitals</h3>
+      {% for h in emergency_hospitals %}
+      <div style="margin-bottom: 16px;">
+        <strong>{{ h.name }}</strong>
+        {% if h.city %}<span class="text-muted"> · {{ h.city }}{% if h.country %}, {{ h.country }}{% endif %}</span>{%
+        endif %}
+        {% if h.address %}<div>🏠 {{ h.address }}</div>{% endif %}
+        {% if h.phone %}<div>📞 {{ h.phone }}</div>{% endif %}
+        {% if h.maps_url %}<div><a href="{{ h.maps_url }}" target="_blank">Open in Maps</a></div>{% endif %}
+        {% if h.notes %}<div class="text-muted">{{ h.notes }}</div>{% endif %}
+      </div>
+      {% endfor %}
+      {% endif %}
+    </div>
+    {% endif %}
+
+    <!-- ============================================================
+         WEATHER (per stop)
+         ============================================================ -->
+    {% if weather_by_stop %}
+    <div class="card">
+      <h2>🌦️ Weather</h2>
+
+      {% for entry in weather_by_stop %}
+      <div class="venue-block">
+        <h3 style="margin-bottom: 6px;">
+          {{ entry.city }}{% if entry.country %}, {{ entry.country }}{% endif %}
+          <span class="text-muted" style="font-weight: normal; font-size: 0.9rem;">
+            ({{ entry.start_date }} → {{ entry.end_date }})
+          </span>
+        </h3>
+
+        {% if entry.is_past %}
+        <div class="text-muted">This stop has already passed.</div>
+
+        {% elif not entry.available %}
+        <div class="text-muted">
+          Forecast not yet available for these dates — check back closer
+          to departure.
+        </div>
+
+        {% else %}
+
+        {% if entry.current %}
+        <div class="row">
+          <div class="col">
+            <span class="label">Now:</span>
+            {{ entry.current.icon }} {{ entry.current.temp }}°C —
+            {{ entry.current.desc }}
+          </div>
+          <div class="col">
+            <span class="label">Humidity:</span> {{ entry.current.humidity }}%
+          </div>
+          <div class="col">
+            <span class="label">Wind:</span> {{ entry.current.wind }} km/h
+          </div>
+        </div>
+        {% endif %}
+
+        {% if entry.daily %}
+        <div class="table-wrap" style="margin-top: 12px;">
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Condition</th>
+                <th>High / Low</th>
+                <th>Precipitation</th>
+                <th>UV Index</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for d in entry.daily %}
+              <tr>
+                <td>{{ d.date }}</td>
+                <td>{{ d.icon }} {{ d.desc }}</td>
+                <td>{{ d.max }}° / {{ d.min }}°</td>
+                <td>{{ d.precip }} mm</td>
+                <td>{{ d.uv }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="text-muted">No daily forecast available.</div>
+        {% endif %}
+
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- ============================================================
+         LOCAL SUPPORT CONTACTS
+         ============================================================ -->
+    {% if contacts %}
+    <div class="card">
+      <h2>📞 Local Support</h2>
+      <div style="display: flex; flex-wrap: wrap; gap: 12px;">
+        {% for c in contacts %}
+        <div class="contact-card" style="flex: 1 1 200px;">
+          <div class="contact-name">{{ c.name }}</div>
+          <div class="contact-role">{{ c.role or '' }}</div>
+          <div>📞 {{ c.phone or '' }}</div>
+          <div>✉️ {{ c.email or '' }}</div>
+          <div>🌍 {{ c.country or '' }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- ============================================================
+         EXPENSES & PER DIEM
+         ============================================================ -->
+    {% if expense_summary %}
+    <div class="card">
+      <h2>💰 Expenses & Per Diem</h2>
+
+      <div class="row">
+        <div class="col">
+          <span class="label">Delegation Allowance:</span>
+          {{ "%.2f"|format(total_allowance) }} {{ trip.base_currency }}
+        </div>
+        <div class="col">
+          <span class="label">Total Spent:</span>
+          {{ "%.2f"|format(total_spent_expenses) }} {{ trip.base_currency }}
+        </div>
+        <div class="col">
+          <span class="label">Remaining:</span>
+          {{ "%.2f"|format(total_allowance - total_spent_expenses) }} {{ trip.base_currency }}
+        </div>
+      </div>
+
+      <div class="table-wrap" style="margin-top: 16px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Traveler</th>
+              <th>Daily Rate</th>
+              <th>Days</th>
+              <th>Allowance</th>
+              <th>Spent</th>
+              <th>Remaining</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for s in expense_summary %}
+            <tr>
+              <td>
+                <strong>{{ s.name }}</strong>
+                {% if s.role %}<br><small class="text-muted">{{ s.role }}</small>{% endif %}
+              </td>
+              <td>{{ "%.2f"|format(s.daily_rate) }}</td>
+              <td>{{ s.days }}</td>
+              <td>{{ "%.2f"|format(s.allowance) }}</td>
+              <td>{{ "%.2f"|format(s.spent) }}</td>
+              <td>
+                {% if s.remaining >= 0 %}
+                <span style="color: var(--success);">{{ "%.2f"|format(s.remaining) }}</span>
+                {% else %}
+                <span style="color: var(--danger);">{{ "%.2f"|format(s.remaining) }}</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- ============================================================
+         PACKING LISTS (per traveler, 2-column item grid)
+         ============================================================ -->
+    {% if packing_lists %}
+    <div class="card">
+      <h2>🎒 Packing Lists</h2>
+      {% for pl in packing_lists %}
+      <div class="venue-block">
+        <h3 style="margin-bottom: 6px;">
+          {{ pl.member_name }}
+          <span class="text-muted" style="font-weight: normal; font-size: 0.9rem;">
+            ({{ pl.packed_count }} of {{ pl.total_count }} packed)
+          </span>
+        </h3>
+        {% if pl['items'] %}
+        {% set ns = namespace(current_cat=None) %}
+        {% for it in pl['items'] %}
+        {% if it.category and it.category != ns.current_cat %}
+        {% if ns.current_cat is not none %}
+      </div>{% endif %}
+      {% set ns.current_cat = it.category %}
+      <div class="pack-category-title">{{ it.category }}</div>
+      <div class="pack-items-grid">
+        {% endif %}
+        <div class="pack-item{% if it.packed %} pack-item--packed{% endif %}">
+          {% if it.packed %}
+          ☑ <s>{{ it.item_name }}</s>
+          {% else %}
+          ☐ {{ it.item_name }}
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <!-- ============================================================
+         TRIP CHECKLISTS (2-column)
+         ============================================================ -->
+  {% if trip_checklists %}
+  <div class="card">
+    <h2>✅ Checklists</h2>
+    {% for cl in trip_checklists %}
+    <div class="venue-block">
+      <h3 style="margin-bottom: 6px;">
+        {{ cl.name }}
+        <span class="text-muted" style="font-weight: normal; font-size: 0.9rem;">
+          ({{ cl.done_count }} of {{ cl.total_count }} done)
+        </span>
+      </h3>
+      {% if cl.description %}
+      <div class="text-muted" style="margin-bottom: 8px;">{{ cl.description }}</div>
+      {% endif %}
+      <div class="pack-items-grid">
+        {% for it in cl['items'] %}
+        <div class="pack-item{% if it.is_done %} pack-item--packed{% endif %}">
+          {% if it.is_done %}
+          ☑ <s>{{ it.item_text }}</s>
+          {% else %}
+          ☐ {{ it.item_text }}
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <!-- ============================================================
+         RECEIPTS
+         ============================================================ -->
+  {% if receipts %}
+  <div class="card">
+    <h2>🧾 Receipts</h2>
+    <div class="receipt-list">
+      {% for rec in receipts %}
+      <div class="receipt-item">
+        <a href="{{ rec.data_uri }}" target="_blank">
+          <img src="{{ rec.data_uri }}" alt="Receipt" class="receipt-thumb">
+        </a>
+        <div><small>{{ rec.description }}</small></div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- ============================================================
+         FOOTER (print only)
+         ============================================================ -->
+  <footer class="footer-note print-only">
+    Generated by EA Command Center on {{ now.strftime('%Y-%m-%d %H:%M') }}
+  </footer>
+
+  </div>
+</body>
+
+</html>
