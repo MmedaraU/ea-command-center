@@ -1,0 +1,15 @@
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
+*.pyc
+.venv/
+venv/
+ea_receipts/
+.backups/
+ea_app_state.json
+ea_dismissed_warnings.json
+ea_weather_cache.json
+docs/screenshots/*.tmp
+*.json
+*.db
