@@ -1160,6 +1160,89 @@ def _budget_item_status_label(s):
     return BUDGET_ITEM_STATUS_LABELS.get(s, s or "—")
 
 # =========================================================
+# SPEAKING ENGAGEMENT CONSTANTS
+# =========================================================
+
+SPEAKING_TYPES = [
+    "Keynote", "Panel", "Fireside", "Podcast", "Webinar",
+    "Workshop", "Guest Lecture", "Interview", "Awards", "Other",
+]
+
+SPEAKING_FORMATS = ["In-Person", "Virtual", "Hybrid"]
+
+SPEAKING_STATUSES = [
+    "invited", "interested", "declined", "cfp_submitted",
+    "under_review", "accepted", "negotiating", "confirmed",
+    "prep_in_progress", "ready", "delivered", "follow_up",
+    "closed", "cancelled",
+]
+
+SPEAKING_STATUS_LABELS = {
+    "invited": "📨 Invited",
+    "interested": "💭 Interested",
+    "declined": "❌ Declined",
+    "cfp_submitted": "📤 CFP Submitted",
+    "under_review": "🔍 Under Review",
+    "accepted": "✅ Accepted",
+    "negotiating": "🤝 Negotiating",
+    "confirmed": "🎯 Confirmed",
+    "prep_in_progress": "📝 Prep",
+    "ready": "🚀 Ready",
+    "delivered": "🎤 Delivered",
+    "follow_up": "📮 Follow-Up",
+    "closed": "🔒 Closed",
+    "cancelled": "🚫 Cancelled",
+}
+
+# Ordered pipeline for Kanban view
+SPEAKING_PIPELINE_ORDER = [
+    "invited", "interested", "cfp_submitted", "under_review",
+    "accepted", "negotiating", "confirmed", "prep_in_progress",
+    "ready", "delivered", "follow_up", "closed",
+]
+
+SPEAKING_DELIVERABLE_STATUSES = [
+    "not_started", "in_progress", "submitted", "done",
+]
+
+SPEAKING_DELIVERABLE_STATUS_LABELS = {
+    "not_started": "⭕ Not Started",
+    "in_progress": "🔄 In Progress",
+    "submitted": "📤 Submitted",
+    "done": "✅ Done",
+}
+
+SPEAKING_CFP_STATUSES = [
+    "draft", "submitted", "under_review", "accepted",
+    "rejected", "waitlisted",
+]
+
+SPEAKING_CFP_STATUS_LABELS = {
+    "draft": "📝 Draft",
+    "submitted": "📤 Submitted",
+    "under_review": "🔍 Under Review",
+    "accepted": "✅ Accepted",
+    "rejected": "❌ Rejected",
+    "waitlisted": "⏸ Waitlisted",
+}
+
+RECORDING_RIGHTS_OPTIONS = [
+    "Organizer only", "Shared", "Speaker only", "Not specified",
+]
+
+
+def _speaking_status_label(s):
+    return SPEAKING_STATUS_LABELS.get(s, s or "—")
+
+
+def _deliverable_status_label(s):
+    return SPEAKING_DELIVERABLE_STATUS_LABELS.get(s, s or "—")
+
+
+def _cfp_status_label(s):
+    return SPEAKING_CFP_STATUS_LABELS.get(s, s or "—")
+
+# =========================================================
 # PAGE CONFIG
 # =========================================================
 
@@ -5663,6 +5746,710 @@ def _render_engagement_detail_dialog(engagement_id):
         st.session_state.pop("dialog_engagement_id", None)
         st.rerun()
 
+# =========================================================
+# SPEAKING ENGAGEMENT DETAIL DIALOG
+# =========================================================
+
+
+def _clear_dialog_speaking_id():
+    st.session_state.pop("dialog_speaking_id", None)
+
+
+@st.dialog(
+    "🎤 Speaking Engagement",
+    width="large",
+    on_dismiss=_clear_dialog_speaking_id,
+)
+def _render_speaking_detail_dialog(engagement_id):
+    eng = db.get_speaking_engagement(engagement_id)
+    if not eng:
+        st.warning("Engagement not found.")
+        return
+
+    st.subheader(f"🎤 {eng['title']}")
+    st.caption(
+        f"**{eng.get('executive_name') or '—'}**  ·  "
+        f"{_speaking_status_label(eng.get('status'))}  ·  "
+        f"📅 {fmt_date(eng.get('engagement_date'))}"
+    )
+
+    # ================================================
+    # SECTION: Edit Engagement
+    # ================================================
+    with st.expander("✏️ Edit Engagement", expanded=False):
+        with st.form(key=f"speak_edit_{engagement_id}"):
+            col1, col2 = st.columns(2)
+            with col1:
+                edit_title = st.text_input(
+                    "Title*", value=eng.get("title") or "",
+                    key=f"speak_edit_title_{engagement_id}",
+                )
+                edit_type = st.selectbox(
+                    "Type",
+                    options=[""] + SPEAKING_TYPES,
+                    index=(
+                        ([""] + SPEAKING_TYPES).index(
+                            eng["engagement_type"]
+                        )
+                        if eng.get("engagement_type") in SPEAKING_TYPES
+                        else 0
+                    ),
+                    key=f"speak_edit_type_{engagement_id}",
+                )
+                edit_format = st.selectbox(
+                    "Format",
+                    options=[""] + SPEAKING_FORMATS,
+                    index=(
+                        ([""] + SPEAKING_FORMATS).index(eng["format"])
+                        if eng.get("format") in SPEAKING_FORMATS
+                        else 0
+                    ),
+                    key=f"speak_edit_format_{engagement_id}",
+                )
+                edit_status = st.selectbox(
+                    "Status",
+                    options=SPEAKING_STATUSES,
+                    index=(
+                        SPEAKING_STATUSES.index(eng["status"])
+                        if eng.get("status") in SPEAKING_STATUSES
+                        else 0
+                    ),
+                    format_func=_speaking_status_label,
+                    key=f"speak_edit_status_{engagement_id}",
+                )
+            with col2:
+                try:
+                    default_date = (
+                        datetime.fromisoformat(
+                            eng["engagement_date"]
+                        ).date()
+                        if eng.get("engagement_date")
+                        else datetime.now().date()
+                    )
+                except Exception:
+                    default_date = datetime.now().date()
+                edit_date = st.date_input(
+                    "Date", value=default_date,
+                    key=f"speak_edit_date_{engagement_id}",
+                )
+                edit_time = st.text_input(
+                    "Time (e.g. 14:00)",
+                    value=eng.get("engagement_time") or "",
+                    key=f"speak_edit_time_{engagement_id}",
+                )
+                edit_duration = st.text_input(
+                    "Duration (e.g. 45 min)",
+                    value=eng.get("duration") or "",
+                    key=f"speak_edit_dur_{engagement_id}",
+                )
+
+            # Organizer
+            st.markdown("**Organizer**")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                edit_organizer_name = st.text_input(
+                    "Organizer Name",
+                    value=eng.get("organizer_name") or "",
+                    key=f"speak_edit_org_name_{engagement_id}",
+                )
+            with col_b:
+                contacts = db.get_contacts(active_only=True)
+                contact_options = {"—": None}
+                contact_options.update(
+                    {c["name"]: c["id"] for c in contacts}
+                )
+                current_org = "—"
+                for lbl, cid in contact_options.items():
+                    if cid == eng.get("organizer_contact_id"):
+                        current_org = lbl
+                        break
+                edit_organizer_label = st.selectbox(
+                    "Organizer Contact",
+                    options=list(contact_options.keys()),
+                    index=list(contact_options.keys()).index(current_org),
+                    key=f"speak_edit_org_contact_{engagement_id}",
+                )
+                edit_organizer_contact_id = contact_options[
+                    edit_organizer_label
+                ]
+
+            st.markdown("**Location & Audience**")
+            col_c, col_d = st.columns(2)
+            with col_c:
+                edit_location = st.text_input(
+                    "Location",
+                    value=eng.get("location") or "",
+                    key=f"speak_edit_loc_{engagement_id}",
+                )
+                edit_timezone = st.text_input(
+                    "Timezone (for virtual)",
+                    value=eng.get("timezone") or "",
+                    key=f"speak_edit_tz_{engagement_id}",
+                )
+            with col_d:
+                edit_audience = st.text_input(
+                    "Audience",
+                    value=eng.get("audience") or "",
+                    key=f"speak_edit_audience_{engagement_id}",
+                )
+                edit_topic = st.text_input(
+                    "Topic",
+                    value=eng.get("topic") or "",
+                    key=f"speak_edit_topic_{engagement_id}",
+                )
+
+            st.markdown("**Fee & Terms**")
+            col_e, col_f = st.columns(2)
+            with col_e:
+                edit_fee_offered = st.number_input(
+                    "Fee Offered", min_value=0.0, step=500.0,
+                    value=float(eng.get("fee_offered") or 0),
+                    key=f"speak_edit_fee_offered_{engagement_id}",
+                )
+                edit_fee_agreed = st.number_input(
+                    "Fee Agreed", min_value=0.0, step=500.0,
+                    value=float(eng.get("fee_agreed") or 0),
+                    key=f"speak_edit_fee_agreed_{engagement_id}",
+                )
+            with col_f:
+                edit_currency = st.text_input(
+                    "Currency", value=eng.get("currency") or "USD",
+                    key=f"speak_edit_currency_{engagement_id}",
+                )
+                edit_recording_rights = st.selectbox(
+                    "Recording Rights",
+                    options=[""] + RECORDING_RIGHTS_OPTIONS,
+                    index=(
+                        ([""] + RECORDING_RIGHTS_OPTIONS).index(
+                            eng["recording_rights"]
+                        )
+                        if eng.get("recording_rights")
+                            in RECORDING_RIGHTS_OPTIONS
+                        else 0
+                    ),
+                    key=f"speak_edit_rights_{engagement_id}",
+                )
+
+            col_g, col_h = st.columns(2)
+            with col_g:
+                edit_travel_covered = st.checkbox(
+                    "Travel Covered",
+                    value=bool(eng.get("travel_covered")),
+                    key=f"speak_edit_travel_{engagement_id}",
+                )
+            with col_h:
+                edit_accom_covered = st.checkbox(
+                    "Accommodation Covered",
+                    value=bool(eng.get("accommodation_covered")),
+                    key=f"speak_edit_accom_{engagement_id}",
+                )
+
+            edit_exclusivity = st.text_input(
+                "Exclusivity",
+                value=eng.get("exclusivity") or "",
+                key=f"speak_edit_excl_{engagement_id}",
+            )
+
+            st.markdown("**🔗 Links**")
+            edit_cal_url = st.text_input(
+                "Calendar Event URL",
+                value=eng.get("calendar_event_url") or "",
+                key=f"speak_edit_cal_{engagement_id}",
+            )
+            edit_notes_url = st.text_input(
+                "Notes Doc URL",
+                value=eng.get("notes_url") or "",
+                key=f"speak_edit_notes_url_{engagement_id}",
+            )
+            edit_notes_native = st.text_area(
+                "Quick Notes",
+                value=eng.get("notes_native") or "",
+                height=80,
+                key=f"speak_edit_notes_{engagement_id}",
+            )
+
+            col_save, col_cancel = st.columns(2)
+            with col_save:
+                save_clicked = st.form_submit_button("💾 Save")
+            with col_cancel:
+                cancel_clicked = st.form_submit_button("❌ Cancel")
+
+            if cancel_clicked:
+                st.rerun()
+
+            if save_clicked:
+                if not edit_title:
+                    st.error("Title is required.")
+                else:
+                    db.update_speaking_engagement(
+                        engagement_id,
+                        title=edit_title,
+                        engagement_type=edit_type or None,
+                        format=edit_format or None,
+                        status=edit_status,
+                        engagement_date=(
+                            edit_date.isoformat() if edit_date else None
+                        ),
+                        engagement_time=edit_time or None,
+                        duration=edit_duration or None,
+                        organizer_name=(
+                            edit_organizer_name or None
+                        ),
+                        organizer_contact_id=(
+                            edit_organizer_contact_id
+                        ),
+                        location=edit_location or None,
+                        timezone=edit_timezone or None,
+                        audience=edit_audience or None,
+                        topic=edit_topic or None,
+                        fee_offered=(
+                            edit_fee_offered
+                            if edit_fee_offered > 0 else None
+                        ),
+                        fee_agreed=(
+                            edit_fee_agreed
+                            if edit_fee_agreed > 0 else None
+                        ),
+                        currency=edit_currency,
+                        recording_rights=(
+                            edit_recording_rights or None
+                        ),
+                        travel_covered=(
+                            1 if edit_travel_covered else 0
+                        ),
+                        accommodation_covered=(
+                            1 if edit_accom_covered else 0
+                        ),
+                        exclusivity=edit_exclusivity or None,
+                        calendar_event_url=edit_cal_url or None,
+                        notes_url=edit_notes_url or None,
+                        notes_native=edit_notes_native or None,
+                    )
+                    st.success("✅ Engagement updated.")
+                    st.rerun()
+
+    st.divider()
+
+    # ================================================
+    # SECTION: Deliverables
+    # ================================================
+    st.markdown("**📦 Deliverables**")
+    deliverables = db.get_speaking_deliverables(engagement_id)
+
+    if not deliverables:
+        st.caption("No deliverables yet.")
+        if st.button(
+            "📋 Add 5 Default Deliverables",
+            key=f"speak_seed_deliv_{engagement_id}",
+        ):
+            n = db.seed_default_deliverables(engagement_id)
+            st.success(f"✅ Added {n} deliverables.")
+            st.rerun()
+    else:
+        for d in deliverables:
+            col1, col2, col3, col4 = st.columns([3, 2, 2, 0.5])
+            with col1:
+                st.markdown(f"**{d['name']}**")
+                bits = []
+                if d.get("owner"):
+                    bits.append(f"👤 {d['owner']}")
+                if d.get("due_date"):
+                    bits.append(f"📅 {fmt_date(d['due_date'])}")
+                if bits:
+                    st.caption(" · ".join(bits))
+                if d.get("file_url"):
+                    st.markdown(f"[Open file]({d['file_url']})")
+                if d.get("submitted_to_organizer"):
+                    st.caption("📤 Submitted to organizer")
+                if d.get("organizer_feedback"):
+                    st.caption(f"💬 {d['organizer_feedback']}")
+            with col2:
+                current = d.get("status") or "not_started"
+                new_status = st.selectbox(
+                    "Status",
+                    options=SPEAKING_DELIVERABLE_STATUSES,
+                    index=(
+                        SPEAKING_DELIVERABLE_STATUSES.index(current)
+                        if current in SPEAKING_DELIVERABLE_STATUSES
+                        else 0
+                    ),
+                    format_func=_deliverable_status_label,
+                    key=f"deliv_status_{d['id']}",
+                    label_visibility="collapsed",
+                )
+                if new_status != current:
+                    db.update_speaking_deliverable(
+                        d["id"], status=new_status
+                    )
+                    st.rerun()
+            with col3:
+                if d.get("due_date"):
+                    today_iso = datetime.now().date().isoformat()
+                    if (
+                        d["due_date"] < today_iso
+                        and d.get("status") != "done"
+                    ):
+                        st.caption("🔴 Overdue")
+            with col4:
+                if st.button("🗑️", key=f"deliv_del_{d['id']}"):
+                    db.delete_speaking_deliverable(d["id"])
+                    st.rerun()
+
+    with st.expander("➕ Add Deliverable", expanded=False):
+        with st.form(key=f"add_deliv_{engagement_id}"):
+            col1, col2 = st.columns(2)
+            with col1:
+                d_name = st.text_input(
+                    "Name*", key=f"new_deliv_name_{engagement_id}"
+                )
+                d_owner = st.text_input(
+                    "Owner", key=f"new_deliv_owner_{engagement_id}"
+                )
+            with col2:
+                d_due = st.date_input(
+                    "Due Date", value=None,
+                    key=f"new_deliv_due_{engagement_id}",
+                )
+                d_url = st.text_input(
+                    "File URL", key=f"new_deliv_url_{engagement_id}"
+                )
+            if st.form_submit_button("➕ Add"):
+                if not d_name:
+                    st.error("Name is required.")
+                else:
+                    db.add_speaking_deliverable(
+                        engagement_id,
+                        name=d_name,
+                        owner=d_owner or None,
+                        due_date=(
+                            d_due.isoformat() if d_due else None
+                        ),
+                        file_url=d_url or None,
+                    )
+                    st.rerun()
+
+    st.divider()
+
+    # ================================================
+    # SECTION: CFP Submissions
+    # ================================================
+    st.markdown("**📤 CFP Submissions**")
+    cfps = db.get_speaking_cfps(engagement_id)
+
+    if cfps:
+        for cf in cfps:
+            col1, col2, col3 = st.columns([4, 2, 0.5])
+            with col1:
+                st.markdown(
+                    f"**{cf.get('proposal_title') or 'Untitled'}**  ·  "
+                    f"{_cfp_status_label(cf.get('status'))}"
+                )
+                if cf.get("submission_deadline"):
+                    st.caption(
+                        f"Deadline: {fmt_date(cf['submission_deadline'])}"
+                    )
+                if cf.get("submission_date"):
+                    st.caption(
+                        f"Submitted: {fmt_date(cf['submission_date'])}"
+                    )
+                if cf.get("cfp_url"):
+                    st.markdown(f"[CFP page]({cf['cfp_url']})")
+                if cf.get("proposal_doc_url"):
+                    st.markdown(f"[Proposal doc]({cf['proposal_doc_url']})")
+            with col2:
+                current = cf.get("status") or "draft"
+                new_status = st.selectbox(
+                    "Status",
+                    options=SPEAKING_CFP_STATUSES,
+                    index=(
+                        SPEAKING_CFP_STATUSES.index(current)
+                        if current in SPEAKING_CFP_STATUSES else 0
+                    ),
+                    format_func=_cfp_status_label,
+                    key=f"cfp_status_{cf['id']}",
+                    label_visibility="collapsed",
+                )
+                if new_status != current:
+                    db.update_speaking_cfp(cf["id"], status=new_status)
+                    st.rerun()
+            with col3:
+                if st.button("🗑️", key=f"cfp_del_{cf['id']}"):
+                    db.delete_speaking_cfp(cf["id"])
+                    st.rerun()
+    else:
+        st.caption("No CFP submissions yet.")
+
+    with st.expander("➕ Add CFP Submission", expanded=False):
+        with st.form(key=f"add_cfp_{engagement_id}"):
+            col1, col2 = st.columns(2)
+            with col1:
+                cfp_url = st.text_input(
+                    "CFP URL", key=f"new_cfp_url_{engagement_id}"
+                )
+                deadline = st.date_input(
+                    "Submission Deadline", value=None,
+                    key=f"new_cfp_deadline_{engagement_id}",
+                )
+                prop_title = st.text_input(
+                    "Proposal Title",
+                    key=f"new_cfp_title_{engagement_id}",
+                )
+            with col2:
+                submitted_date = st.date_input(
+                    "Submitted On (leave blank if not yet)",
+                    value=None,
+                    key=f"new_cfp_submitted_{engagement_id}",
+                )
+                prop_doc = st.text_input(
+                    "Proposal Doc URL",
+                    key=f"new_cfp_doc_{engagement_id}",
+                )
+                initial_status = st.selectbox(
+                    "Status",
+                    options=SPEAKING_CFP_STATUSES,
+                    format_func=_cfp_status_label,
+                    key=f"new_cfp_status_{engagement_id}",
+                )
+            abstract = st.text_area(
+                "Abstract",
+                key=f"new_cfp_abstract_{engagement_id}",
+                height=100,
+            )
+            if st.form_submit_button("➕ Add"):
+                db.add_speaking_cfp(
+                    engagement_id,
+                    cfp_url=cfp_url or None,
+                    submission_deadline=(
+                        deadline.isoformat() if deadline else None
+                    ),
+                    submission_date=(
+                        submitted_date.isoformat()
+                        if submitted_date else None
+                    ),
+                    proposal_title=prop_title or None,
+                    abstract=abstract or None,
+                    proposal_doc_url=prop_doc or None,
+                    status=initial_status,
+                )
+                st.rerun()
+
+    st.divider()
+
+    # ================================================
+    # SECTION: Logistics
+    # ================================================
+    with st.expander("✈️ Logistics", expanded=False):
+        with st.form(key=f"speak_logistics_{engagement_id}"):
+            col1, col2 = st.columns(2)
+            with col1:
+                log_travel_required = st.checkbox(
+                    "Travel Required",
+                    value=bool(eng.get("travel_covered")),
+                    key=f"log_travel_{engagement_id}",
+                )
+                log_flight_links = st.text_area(
+                    "Flight links / confirmations",
+                    key=f"log_flights_{engagement_id}", height=60,
+                )
+                log_accom = st.text_input(
+                    "Accommodation",
+                    key=f"log_accom_{engagement_id}",
+                )
+                log_ground = st.text_input(
+                    "Ground transport",
+                    key=f"log_ground_{engagement_id}",
+                )
+            with col2:
+                log_venue = st.text_input(
+                    "Venue address",
+                    key=f"log_venue_{engagement_id}",
+                )
+                log_green_room = st.text_input(
+                    "Green room",
+                    key=f"log_green_{engagement_id}",
+                )
+                log_dress = st.text_input(
+                    "Dress code",
+                    key=f"log_dress_{engagement_id}",
+                )
+                log_onsite = st.text_input(
+                    "On-site contact",
+                    key=f"log_onsite_{engagement_id}",
+                )
+            log_rehearsal = st.date_input(
+                "Rehearsal Date", value=None,
+                key=f"log_rehearsal_{engagement_id}",
+            )
+            log_tech = st.date_input(
+                "Tech Check Date", value=None,
+                key=f"log_tech_{engagement_id}",
+            )
+            log_slides_due = st.date_input(
+                "Slides Due to Organizer", value=None,
+                key=f"log_slides_{engagement_id}",
+            )
+            if st.form_submit_button("💾 Save Logistics"):
+                # Store logistics in the notes field for now —
+                # a dedicated table would be Phase 8+ if needed
+                logistics_text = (
+                    f"LOGISTICS\n"
+                    f"Travel required: {log_travel_required}\n"
+                    f"Flight links: {log_flight_links}\n"
+                    f"Accommodation: {log_accom}\n"
+                    f"Ground transport: {log_ground}\n"
+                    f"Venue: {log_venue}\n"
+                    f"Green room: {log_green_room}\n"
+                    f"Dress code: {log_dress}\n"
+                    f"On-site contact: {log_onsite}\n"
+                    f"Rehearsal: {log_rehearsal}\n"
+                    f"Tech check: {log_tech}\n"
+                    f"Slides due: {log_slides_due}"
+                )
+                db.update_speaking_engagement(
+                    engagement_id,
+                    notes_native=logistics_text,
+                )
+                st.success("✅ Logistics saved to Quick Notes.")
+                st.rerun()
+
+    st.divider()
+
+    # ================================================
+    # SECTION: Post-Engagement
+    # ================================================
+    with st.expander("📮 Post-Engagement", expanded=False):
+        with st.form(key=f"speak_post_{engagement_id}"):
+            col1, col2 = st.columns(2)
+            with col1:
+                thankyou = st.checkbox(
+                    "Thank-you sent",
+                    value=bool(eng.get("thank_you_sent")),
+                    key=f"post_thankyou_{engagement_id}",
+                )
+                try:
+                    default_thanks_date = (
+                        datetime.fromisoformat(
+                            eng["thank_you_date"]
+                        ).date()
+                        if eng.get("thank_you_date")
+                        else None
+                    )
+                except Exception:
+                    default_thanks_date = None
+                thanks_date = st.date_input(
+                    "Thank-you date",
+                    value=default_thanks_date,
+                    key=f"post_thanks_date_{engagement_id}",
+                )
+                feedback = st.text_area(
+                    "Feedback received",
+                    value=eng.get("feedback_received") or "",
+                    height=80,
+                    key=f"post_feedback_{engagement_id}",
+                )
+            with col2:
+                rating = st.number_input(
+                    "Rating (1–5)",
+                    min_value=0, max_value=5, step=1,
+                    value=int(eng.get("feedback_rating") or 0),
+                    key=f"post_rating_{engagement_id}",
+                )
+                testimonial = st.text_area(
+                    "Testimonial",
+                    value=eng.get("testimonial") or "",
+                    height=80,
+                    key=f"post_testimonial_{engagement_id}",
+                )
+                testimonial_perm = st.checkbox(
+                    "Permission to use testimonial",
+                    value=bool(eng.get("testimonial_permission")),
+                    key=f"post_perm_{engagement_id}",
+                )
+
+            col_c, col_d = st.columns(2)
+            with col_c:
+                recording_recv = st.checkbox(
+                    "Recording received",
+                    value=bool(eng.get("recording_received")),
+                    key=f"post_recv_{engagement_id}",
+                )
+                recording_url = st.text_input(
+                    "Recording URL",
+                    value=eng.get("recording_url") or "",
+                    key=f"post_url_{engagement_id}",
+                )
+            with col_d:
+                would_repeat = st.selectbox(
+                    "Would repeat?",
+                    options=["", "Yes", "No", "Maybe"],
+                    index=(
+                        ["", "Yes", "No", "Maybe"].index(
+                            {
+                                1: "Yes", 0: "No", 2: "Maybe"
+                            }.get(eng.get("would_repeat"), "")
+                        )
+                        if eng.get("would_repeat") is not None
+                        else 0
+                    ),
+                    key=f"post_repeat_{engagement_id}",
+                )
+
+            if st.form_submit_button("💾 Save Post-Engagement"):
+                repeat_map = {"Yes": 1, "No": 0, "Maybe": 2, "": None}
+                db.update_speaking_engagement(
+                    engagement_id,
+                    thank_you_sent=1 if thankyou else 0,
+                    thank_you_date=(
+                        thanks_date.isoformat() if thanks_date else None
+                    ),
+                    feedback_received=feedback or None,
+                    feedback_rating=(
+                        int(rating) if rating else None
+                    ),
+                    testimonial=testimonial or None,
+                    testimonial_permission=(
+                        1 if testimonial_perm else 0
+                    ),
+                    recording_received=1 if recording_recv else 0,
+                    recording_url=recording_url or None,
+                    would_repeat=repeat_map.get(would_repeat),
+                )
+                st.success("✅ Post-engagement saved.")
+                st.rerun()
+
+    st.divider()
+
+    # ================================================
+    # SECTION: Delete
+    # ================================================
+    if st.button(
+        "🗑️ Delete This Engagement", type="primary",
+        key=f"speak_del_btn_{engagement_id}",
+    ):
+        st.session_state[f"confirm_del_speak_{engagement_id}"] = True
+
+    if st.session_state.get(f"confirm_del_speak_{engagement_id}", False):
+        st.warning(f"⚠️ Permanently delete '{eng['title']}'?")
+        col_y, col_n = st.columns(2)
+        with col_y:
+            if st.button(
+                "Yes, Delete", key=f"speak_del_yes_{engagement_id}"
+            ):
+                db.delete_speaking_engagement(engagement_id)
+                st.session_state.pop(
+                    f"confirm_del_speak_{engagement_id}", None
+                )
+                st.session_state.pop("dialog_speaking_id", None)
+                st.rerun()
+        with col_n:
+            if st.button(
+                "Cancel", key=f"speak_del_no_{engagement_id}"
+            ):
+                st.session_state.pop(
+                    f"confirm_del_speak_{engagement_id}", None
+                )
+                st.rerun()
+
 def _render_meeting_detail_dialog(meeting_id):
     meeting = db.get_meeting(meeting_id)
     if not meeting:
@@ -6788,16 +7575,320 @@ with tab_events:
 
 
 # =========================================================
-# TAB: SPEAKING (placeholder — built in Phase 6)
+# TAB: SPEAKING
 # =========================================================
 
 with tab_speaking:
     st.header("🎤 Speaking Engagements")
-    st.info(
-        "The Speaking Engagements module is coming in **Phase 6**. "
-        "It will track the pipeline from invite to post-event follow-up, "
-        "including CFP submissions, negotiation, deliverables, and logistics."
+
+    # ---- View toggle ----
+    col1, col2, col3 = st.columns([1.5, 3, 3])
+    with col1:
+        view_mode = st.radio(
+            "View",
+            ["Pipeline", "List"],
+            horizontal=True,
+            key="speak_view_mode",
+        )
+    with col2:
+        exec_filter_options = ["All Executives"] + [
+            f"{e['name']} (ID: {e['id']})"
+            for e in db.get_all_executives(active_only=False)
+        ]
+        exec_filter_label = st.selectbox(
+            "Executive", exec_filter_options, key="speak_filter_exec"
+        )
+        exec_filter_id = (
+            None
+            if exec_filter_label == "All Executives"
+            else int(exec_filter_label.split("(ID: ")[1].rstrip(")"))
+        )
+    with col3:
+        search_q = st.text_input(
+            "Search", placeholder="Title, organizer, topic...",
+            key="speak_search",
+        )
+
+    col_new, _sp = st.columns([1.4, 5])
+    with col_new:
+        if st.button(
+            "➕ New Engagement", type="primary", key="speak_new_btn"
+        ):
+            st.session_state["speak_show_create"] = True
+
+    # ---- Create form ----
+    if st.session_state.get("speak_show_create", False):
+        with st.expander("➕ New Engagement", expanded=True):
+            execs_active = db.get_all_executives(active_only=True)
+            if not execs_active:
+                st.warning(
+                    "No active executives. Add one in the sidebar first."
+                )
+            else:
+                with st.form("speak_create_form"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        exec_options = {
+                            e["name"]: e["id"] for e in execs_active
+                        }
+                        new_exec_label = st.selectbox(
+                            "Executive*",
+                            options=list(exec_options.keys()),
+                            key="speak_new_exec",
+                        )
+                        new_title = st.text_input(
+                            "Title*", key="speak_new_title"
+                        )
+                        new_type = st.selectbox(
+                            "Type",
+                            options=[""] + SPEAKING_TYPES,
+                            key="speak_new_type",
+                        )
+                        new_format = st.selectbox(
+                            "Format",
+                            options=[""] + SPEAKING_FORMATS,
+                            key="speak_new_format",
+                        )
+                        new_status = st.selectbox(
+                            "Status",
+                            options=SPEAKING_STATUSES,
+                            format_func=_speaking_status_label,
+                            key="speak_new_status",
+                        )
+                    with col2:
+                        new_date = st.date_input(
+                            "Date", value=datetime.now().date(),
+                            key="speak_new_date",
+                        )
+                        new_time = st.text_input(
+                            "Time (e.g. 14:00)", key="speak_new_time"
+                        )
+                        new_duration = st.text_input(
+                            "Duration (e.g. 45 min)",
+                            key="speak_new_duration",
+                        )
+                        new_organizer_name = st.text_input(
+                            "Organizer Name", key="speak_new_org"
+                        )
+
+                    new_location = st.text_input(
+                        "Location", key="speak_new_loc"
+                    )
+                    new_audience = st.text_input(
+                        "Audience", key="speak_new_audience"
+                    )
+                    new_topic = st.text_input(
+                        "Topic", key="speak_new_topic"
+                    )
+
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        new_fee_offered = st.number_input(
+                            "Fee Offered", min_value=0.0, step=500.0,
+                            value=0.0, key="speak_new_fee_offered",
+                        )
+                        new_currency = st.text_input(
+                            "Currency", value="USD",
+                            key="speak_new_currency",
+                        )
+                    with col_b:
+                        new_fee_agreed = st.number_input(
+                            "Fee Agreed", min_value=0.0, step=500.0,
+                            value=0.0, key="speak_new_fee_agreed",
+                        )
+                        new_cal_url = st.text_input(
+                            "Calendar Event URL",
+                            key="speak_new_cal",
+                        )
+
+                    new_notes = st.text_area(
+                        "Quick Notes", height=80,
+                        key="speak_new_notes",
+                    )
+
+                    col_sub, col_cancel = st.columns(2)
+                    with col_sub:
+                        submitted = st.form_submit_button("💾 Create")
+                    with col_cancel:
+                        cancelled = st.form_submit_button("❌ Cancel")
+
+                    if cancelled:
+                        st.session_state["speak_show_create"] = False
+                        st.rerun()
+
+                    if submitted:
+                        if not new_title:
+                            st.error("Title is required.")
+                        else:
+                            new_exec_id = exec_options[new_exec_label]
+                            dupes = db.find_duplicate_speaking_engagements(
+                                new_exec_id, new_title,
+                                new_date.isoformat() if new_date else None,
+                            )
+                            if dupes:
+                                st.warning(
+                                    "⚠️ An engagement with the same title "
+                                    "and date already exists."
+                                )
+                                for d in dupes:
+                                    st.caption(
+                                        f"- {d['title']} "
+                                        f"({d.get('engagement_date')})"
+                                    )
+                                st.info("Edit the existing one instead.")
+                            else:
+                                new_id = db.add_speaking_engagement(
+                                    new_exec_id,
+                                    new_title,
+                                    organizer_name=(
+                                        new_organizer_name or None
+                                    ),
+                                    engagement_type=new_type or None,
+                                    format=new_format or None,
+                                    status=new_status,
+                                    engagement_date=(
+                                        new_date.isoformat()
+                                        if new_date else None
+                                    ),
+                                    engagement_time=new_time or None,
+                                    duration=new_duration or None,
+                                    location=new_location or None,
+                                    audience=new_audience or None,
+                                    topic=new_topic or None,
+                                    fee_offered=(
+                                        new_fee_offered
+                                        if new_fee_offered > 0 else None
+                                    ),
+                                    fee_agreed=(
+                                        new_fee_agreed
+                                        if new_fee_agreed > 0 else None
+                                    ),
+                                    currency=new_currency,
+                                    calendar_event_url=(
+                                        new_cal_url or None
+                                    ),
+                                    notes_native=new_notes or None,
+                                )
+                                st.session_state["speak_show_create"] = False
+                                st.success("✅ Engagement created.")
+                                st.rerun()
+
+    st.divider()
+
+    # ---- Build query ----
+    engagements = db.get_speaking_engagements(
+        exec_id=exec_filter_id,
+        search=search_q or None,
     )
+
+    # ---- Render ----
+    if not engagements:
+        st.info("No engagements match these filters.")
+    else:
+        if view_mode == "Pipeline":
+            st.write("**Pipeline View** — counts by status")
+            counts = db.get_speaking_pipeline_counts()
+            # Compact pipeline summary
+            pipeline_cols = st.columns(len(SPEAKING_PIPELINE_ORDER[:6]))
+            for i, status_key in enumerate(SPEAKING_PIPELINE_ORDER[:6]):
+                with pipeline_cols[i]:
+                    st.metric(
+                        _speaking_status_label(status_key),
+                        counts.get(status_key, 0),
+                    )
+            pipeline_cols_2 = st.columns(len(SPEAKING_PIPELINE_ORDER[6:]))
+            for i, status_key in enumerate(SPEAKING_PIPELINE_ORDER[6:]):
+                with pipeline_cols_2[i]:
+                    st.metric(
+                        _speaking_status_label(status_key),
+                        counts.get(status_key, 0),
+                    )
+
+            st.divider()
+
+            # Group by status, show in pipeline order
+            by_status = {}
+            for e in engagements:
+                by_status.setdefault(
+                    e.get("status") or "invited", []
+                ).append(e)
+
+            for status_key in SPEAKING_PIPELINE_ORDER:
+                group = by_status.get(status_key, [])
+                if not group:
+                    continue
+                with st.expander(
+                    f"{_speaking_status_label(status_key)} · {len(group)}",
+                    expanded=status_key in (
+                        "confirmed", "prep_in_progress", "ready"
+                    ),
+                ):
+                    for eng in group:
+                        col1, col2 = st.columns([5, 1])
+                        with col1:
+                            st.markdown(f"**{eng['title']}**")
+                            st.caption(
+                                f"👤 {eng.get('executive_name') or '—'}  ·  "
+                                f"📅 {fmt_date(eng.get('engagement_date'))}"
+                                + (
+                                    f"  ·  {eng['engagement_type']}"
+                                    if eng.get("engagement_type") else ""
+                                )
+                                + (
+                                    f"  ·  💰 {fmt_money(eng['fee_agreed'], eng.get('currency') or 'USD')}"
+                                    if eng.get("fee_agreed") else ""
+                                )
+                            )
+                        with col2:
+                            if st.button(
+                                "📂 Open",
+                                key=f"speak_pipe_open_{eng['id']}",
+                                use_container_width=True,
+                            ):
+                                st.session_state[
+                                    "dialog_speaking_id"
+                                ] = eng["id"]
+
+        else:
+            # List view
+            st.write(f"**{len(engagements)} engagement(s)**")
+            for eng in engagements:
+                col1, col2 = st.columns([6, 1])
+                with col1:
+                    st.markdown(
+                        f"### {eng['title']}  ·  "
+                        f"{_speaking_status_label(eng.get('status'))}"
+                    )
+                    st.caption(
+                        f"👤 {eng.get('executive_name') or '—'}  ·  "
+                        f"📅 {fmt_date(eng.get('engagement_date'))}"
+                        + (
+                            f"  ·  📍 {eng['location']}"
+                            if eng.get("location") else ""
+                        )
+                        + (
+                            f"  ·  💰 {fmt_money(eng['fee_agreed'], eng.get('currency') or 'USD')}"
+                            if eng.get("fee_agreed") else ""
+                        )
+                    )
+                    delivs = db.get_speaking_deliverables(eng["id"])
+                    if delivs:
+                        done = sum(
+                            1 for d in delivs
+                            if d.get("status") == "done"
+                        )
+                        st.caption(
+                            f"📦 {done}/{len(delivs)} deliverables done"
+                        )
+                with col2:
+                    if st.button(
+                        "📂 Open",
+                        key=f"speak_list_open_{eng['id']}",
+                        use_container_width=True,
+                    ):
+                        st.session_state["dialog_speaking_id"] = eng["id"]
+
+                st.divider()
 
 
 # =========================================================
@@ -7328,6 +8419,142 @@ with tab_dashboard:
     st.divider()
     # ================================================
     # END VENDOR & BUDGET WIDGETS
+    # ================================================
+
+    # ================================================
+    # SPEAKING ENGAGEMENT WIDGETS
+    # ================================================
+    today_iso_speak = today_iso
+    week_end_iso_speak = week_end_iso
+
+    upcoming_speak_30 = db.get_speaking_engagements(
+        upcoming_only=True,
+        end_date=(
+            datetime.now().date() + timedelta(days=30)
+        ).isoformat(),
+    )
+    deliverables_due = db.get_deliverables_due(
+        start_date=today_iso_speak, end_date=week_end_iso_speak,
+    )
+    cfps_closing = db.get_cfps_closing_within_days(days=14)
+    pipeline_value = db.get_speaking_pipeline_value()
+    thankyous_overdue = db.get_thank_yous_overdue(days_since_delivery=7)
+
+    col_a, col_b, col_c, col_d = st.columns(4)
+    with col_a:
+        st.metric("🎤 Upcoming (30d)", len(upcoming_speak_30))
+    with col_b:
+        st.metric("📦 Deliverables Due (7d)", len(deliverables_due))
+    with col_c:
+        st.metric("📤 CFPs Closing (14d)", len(cfps_closing))
+    with col_d:
+        st.metric(
+            "💰 Confirmed Value",
+            fmt_money(pipeline_value, "USD"),
+        )
+
+    with st.expander(
+        "🎤 Upcoming Engagements (30 days)",
+        expanded=bool(upcoming_speak_30),
+    ):
+        if not upcoming_speak_30:
+            st.caption("No upcoming engagements.")
+        else:
+            for eng in upcoming_speak_30:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.markdown(f"**{eng['title']}**")
+                    st.caption(
+                        f"👤 {eng.get('executive_name') or '—'}  ·  "
+                        f"📅 {fmt_date(eng.get('engagement_date'))}  ·  "
+                        f"{_speaking_status_label(eng.get('status'))}"
+                    )
+                with col2:
+                    if st.button(
+                        "Open",
+                        key=f"dash_speak_open_{eng['id']}",
+                    ):
+                        st.session_state["dialog_speaking_id"] = eng["id"]
+                        st.rerun()
+
+    with st.expander(
+        "📦 Deliverables Due (7 days)",
+        expanded=bool(deliverables_due),
+    ):
+        if not deliverables_due:
+            st.caption("No deliverables due this week.")
+        else:
+            for d in deliverables_due:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.markdown(f"**{d['name']}**")
+                    st.caption(
+                        f"📅 {fmt_date(d.get('due_date'))}  ·  "
+                        f"from *{d.get('engagement_title')}*"
+                    )
+                with col2:
+                    if st.button(
+                        "Open",
+                        key=f"dash_deliv_open_{d['id']}",
+                    ):
+                        st.session_state["dialog_speaking_id"] = d[
+                            "engagement_id"
+                        ]
+                        st.rerun()
+
+    with st.expander(
+        "📤 CFPs Closing (14 days)",
+        expanded=bool(cfps_closing),
+    ):
+        if not cfps_closing:
+            st.caption("No CFPs closing soon.")
+        else:
+            for cf in cfps_closing:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.markdown(
+                        f"**{cf.get('proposal_title') or 'Untitled'}**"
+                    )
+                    st.caption(
+                        f"📅 Deadline: {fmt_date(cf.get('submission_deadline'))}  ·  "
+                        f"from *{cf.get('engagement_title')}*"
+                    )
+                with col2:
+                    if st.button(
+                        "Open",
+                        key=f"dash_cfp_open_{cf['id']}",
+                    ):
+                        st.session_state["dialog_speaking_id"] = cf[
+                            "engagement_id"
+                        ]
+                        st.rerun()
+
+    with st.expander(
+        "📮 Thank-Yous Overdue",
+        expanded=bool(thankyous_overdue),
+    ):
+        if not thankyous_overdue:
+            st.caption("All thank-yous sent.")
+        else:
+            for eng in thankyous_overdue:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.markdown(f"**{eng['title']}**")
+                    st.caption(
+                        f"📅 {fmt_date(eng.get('engagement_date'))}  ·  "
+                        f"👤 {eng.get('executive_name') or '—'}"
+                    )
+                with col2:
+                    if st.button(
+                        "Open",
+                        key=f"dash_ty_open_{eng['id']}",
+                    ):
+                        st.session_state["dialog_speaking_id"] = eng["id"]
+                        st.rerun()
+
+    st.divider()
+    # ================================================
+    # END SPEAKING ENGAGEMENT WIDGETS
     # ================================================
 
     # ---- Load everything once ----
@@ -11573,3 +12800,8 @@ if st.session_state.get("dialog_rsvp_import_event_id"):
         st.session_state["dialog_rsvp_import_event_id"]
     )
     
+
+if st.session_state.get("dialog_speaking_id"):
+    _render_speaking_detail_dialog(
+        st.session_state["dialog_speaking_id"]
+    )

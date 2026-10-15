@@ -6463,3 +6463,464 @@ def seed_default_budget_templates():
                 description=f"Default template: {name}",
                 items=items,
             )
+
+
+# =========================================================
+# SPEAKING ENGAGEMENTS
+# =========================================================
+
+
+def add_speaking_engagement(
+    exec_id, title, organizer_contact_id=None, organizer_name=None,
+    engagement_type=None, format=None, status="invited",
+    engagement_date=None, engagement_time=None, duration=None,
+    location=None, timezone=None, audience=None, topic=None,
+    fee_offered=None, fee_agreed=None, currency="USD",
+    travel_covered=0, accommodation_covered=0,
+    recording_rights=None, exclusivity=None,
+    calendar_event_url=None, notes_url=None, notes_native=None,
+    linked_trip_id=None,
+):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO speaking_engagements
+               (exec_id, title, organizer_contact_id, organizer_name,
+                engagement_type, format, status, engagement_date,
+                engagement_time, duration, location, timezone, audience,
+                topic, fee_offered, fee_agreed, currency, travel_covered,
+                accommodation_covered, recording_rights, exclusivity,
+                calendar_event_url, notes_url, notes_native, linked_trip_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                exec_id, title, organizer_contact_id, organizer_name,
+                engagement_type, format, status, engagement_date,
+                engagement_time, duration, location, timezone, audience,
+                topic, fee_offered, fee_agreed, currency,
+                1 if travel_covered else 0,
+                1 if accommodation_covered else 0,
+                recording_rights, exclusivity, calendar_event_url,
+                notes_url, notes_native, linked_trip_id,
+            ),
+        )
+        conn.commit()
+        return c.lastrowid
+    finally:
+        conn.close()
+
+
+def get_speaking_engagement(engagement_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT se.*, e.name AS executive_name,
+                      c.name AS organizer_contact_name,
+                      c.email AS organizer_contact_email
+               FROM speaking_engagements se
+               LEFT JOIN executives e ON se.exec_id = e.id
+               LEFT JOIN contacts c ON se.organizer_contact_id = c.id
+               WHERE se.id = ?""",
+            (engagement_id,),
+        )
+        row = c.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_speaking_engagements(
+    exec_id=None, status=None, start_date=None, end_date=None,
+    search=None, upcoming_only=False,
+):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        conditions, params = [], []
+        if exec_id:
+            conditions.append("se.exec_id = ?")
+            params.append(exec_id)
+        if status:
+            if isinstance(status, (list, tuple)):
+                placeholders = ",".join("?" * len(status))
+                conditions.append(f"se.status IN ({placeholders})")
+                params.extend(status)
+            else:
+                conditions.append("se.status = ?")
+                params.append(status)
+        if start_date:
+            conditions.append("se.engagement_date >= ?")
+            params.append(start_date)
+        if end_date:
+            conditions.append("se.engagement_date <= ?")
+            params.append(end_date)
+        if upcoming_only:
+            today_iso = datetime.now().date().isoformat()
+            conditions.append("se.engagement_date >= ?")
+            params.append(today_iso)
+            conditions.append(
+                "se.status NOT IN ('closed', 'cancelled', 'declined')"
+            )
+        if search:
+            like = f"%{search.lower()}%"
+            conditions.append(
+                "(LOWER(se.title) LIKE ? "
+                "OR LOWER(COALESCE(se.organizer_name,'')) LIKE ? "
+                "OR LOWER(COALESCE(se.topic,'')) LIKE ?)"
+            )
+            params.extend([like, like, like])
+
+        q = """SELECT se.*, e.name AS executive_name
+               FROM speaking_engagements se
+               LEFT JOIN executives e ON se.exec_id = e.id"""
+        if conditions:
+            q += " WHERE " + " AND ".join(conditions)
+        q += " ORDER BY se.engagement_date DESC, se.id DESC"
+        c.execute(q, params)
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def update_speaking_engagement(engagement_id, **kwargs):
+    if not kwargs:
+        return
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        fields, params = [], []
+        for k, v in kwargs.items():
+            fields.append(f"{k} = ?")
+            params.append(v)
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(engagement_id)
+        c.execute(
+            f"UPDATE speaking_engagements SET {', '.join(fields)} "
+            "WHERE id = ?",
+            params,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_speaking_engagement(engagement_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM speaking_engagements WHERE id = ?",
+            (engagement_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def find_duplicate_speaking_engagements(exec_id, title, engagement_date,
+                                        exclude_id=None):
+    if not exec_id or not title or not engagement_date:
+        return []
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        q = """SELECT * FROM speaking_engagements
+               WHERE exec_id = ? AND LOWER(title) = LOWER(?)
+                 AND engagement_date = ?"""
+        params = [exec_id, title.strip(), engagement_date]
+        if exclude_id:
+            q += " AND id != ?"
+            params.append(exclude_id)
+        c.execute(q, params)
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+# --- Deliverables ---
+
+
+def add_speaking_deliverable(
+    engagement_id, name, owner=None, due_date=None,
+    status="not_started", file_url=None,
+    submitted_to_organizer=0, organizer_feedback=None,
+):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO speaking_deliverables
+               (engagement_id, name, owner, due_date, status, file_url,
+                submitted_to_organizer, organizer_feedback)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                engagement_id, name, owner, due_date, status, file_url,
+                1 if submitted_to_organizer else 0, organizer_feedback,
+            ),
+        )
+        conn.commit()
+        return c.lastrowid
+    finally:
+        conn.close()
+
+
+def get_speaking_deliverables(engagement_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT * FROM speaking_deliverables
+               WHERE engagement_id = ?
+               ORDER BY due_date IS NULL, due_date ASC, id""",
+            (engagement_id,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def update_speaking_deliverable(deliverable_id, **kwargs):
+    if not kwargs:
+        return
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        fields, params = [], []
+        for k, v in kwargs.items():
+            fields.append(f"{k} = ?")
+            params.append(v)
+        params.append(deliverable_id)
+        c.execute(
+            f"UPDATE speaking_deliverables SET {', '.join(fields)} "
+            "WHERE id = ?",
+            params,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_speaking_deliverable(deliverable_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM speaking_deliverables WHERE id = ?",
+            (deliverable_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def seed_default_deliverables(engagement_id):
+    """Create the 5 core deliverables if the engagement has none yet."""
+    existing = get_speaking_deliverables(engagement_id)
+    if existing:
+        return 0
+    defaults = [
+        ("Speaker bio", None, "not_started"),
+        ("Headshot (high-res)", None, "not_started"),
+        ("Slides / deck", None, "not_started"),
+        ("A/V requirements", None, "not_started"),
+        ("Introduction script", None, "not_started"),
+    ]
+    for name, owner, status in defaults:
+        add_speaking_deliverable(
+            engagement_id, name=name, owner=owner, status=status
+        )
+    return len(defaults)
+
+
+def get_deliverables_due(start_date=None, end_date=None):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        conditions = ["sd.status != 'done'", "sd.due_date IS NOT NULL"]
+        params = []
+        if start_date:
+            conditions.append("sd.due_date >= ?")
+            params.append(start_date)
+        if end_date:
+            conditions.append("sd.due_date <= ?")
+            params.append(end_date)
+        q = """SELECT sd.*, se.title AS engagement_title,
+                      se.id AS engagement_id,
+                      e.name AS executive_name
+               FROM speaking_deliverables sd
+               JOIN speaking_engagements se ON sd.engagement_id = se.id
+               LEFT JOIN executives e ON se.exec_id = e.id
+               WHERE """
+        q += " AND ".join(conditions)
+        q += " ORDER BY sd.due_date ASC"
+        c.execute(q, params)
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+# --- CFPs ---
+
+
+def add_speaking_cfp(
+    engagement_id, cfp_url=None, submission_deadline=None,
+    submission_date=None, proposal_title=None, abstract=None,
+    proposal_doc_url=None, status="draft", decision_date=None, notes=None,
+):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO speaking_cfps
+               (engagement_id, cfp_url, submission_deadline,
+                submission_date, proposal_title, abstract,
+                proposal_doc_url, status, decision_date, notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                engagement_id, cfp_url, submission_deadline,
+                submission_date, proposal_title, abstract,
+                proposal_doc_url, status, decision_date, notes,
+            ),
+        )
+        conn.commit()
+        return c.lastrowid
+    finally:
+        conn.close()
+
+
+def get_speaking_cfps(engagement_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT * FROM speaking_cfps
+               WHERE engagement_id = ?
+               ORDER BY submission_deadline IS NULL,
+                        submission_deadline ASC, id""",
+            (engagement_id,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def update_speaking_cfp(cfp_id, **kwargs):
+    if not kwargs:
+        return
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        fields, params = [], []
+        for k, v in kwargs.items():
+            fields.append(f"{k} = ?")
+            params.append(v)
+        params.append(cfp_id)
+        c.execute(
+            f"UPDATE speaking_cfps SET {', '.join(fields)} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_speaking_cfp(cfp_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM speaking_cfps WHERE id = ?", (cfp_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_cfps_closing_within_days(days=14):
+    today = datetime.now().date()
+    cutoff = (today + timedelta(days=days)).isoformat()
+    today_iso = today.isoformat()
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT cf.*, se.title AS engagement_title,
+                      se.id AS engagement_id,
+                      e.name AS executive_name
+               FROM speaking_cfps cf
+               JOIN speaking_engagements se ON cf.engagement_id = se.id
+               LEFT JOIN executives e ON se.exec_id = e.id
+               WHERE cf.status = 'draft'
+                 AND cf.submission_deadline >= ?
+                 AND cf.submission_deadline <= ?
+               ORDER BY cf.submission_deadline ASC""",
+            (today_iso, cutoff),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+# --- Pipeline helpers ---
+
+
+def get_speaking_pipeline_counts():
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT status, COUNT(*) FROM speaking_engagements
+               GROUP BY status"""
+        )
+        return {row[0] or "invited": row[1] for row in c.fetchall()}
+    finally:
+        conn.close()
+
+
+def get_speaking_pipeline_value():
+    """Sum of agreed fees for confirmed + prep + ready + delivered."""
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT COALESCE(SUM(fee_agreed), 0)
+               FROM speaking_engagements
+               WHERE status IN ('confirmed', 'prep_in_progress',
+                                'ready', 'delivered')
+                 AND fee_agreed IS NOT NULL"""
+        )
+        return c.fetchone()[0] or 0
+    finally:
+        conn.close()
+
+
+def get_thank_yous_overdue(days_since_delivery=7):
+    """Engagements marked delivered more than N days ago without
+    thank_you_sent."""
+    today = datetime.now().date()
+    cutoff = (today - timedelta(days=days_since_delivery)).isoformat()
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT se.*, e.name AS executive_name
+               FROM speaking_engagements se
+               LEFT JOIN executives e ON se.exec_id = e.id
+               WHERE se.status IN ('delivered', 'follow_up')
+                 AND se.thank_you_sent = 0
+                 AND se.engagement_date IS NOT NULL
+                 AND se.engagement_date <= ?
+               ORDER BY se.engagement_date ASC""",
+            (cutoff,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
