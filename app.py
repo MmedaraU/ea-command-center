@@ -252,37 +252,6 @@ def _find_duplicate_items(
             matches.append(it)
     return matches
 
-
-def _find_stop_conflicts(
-    existing_stops, new_city, new_start_iso, new_end_iso, exclude_idx=None
-):
-    """
-    Return (same_city, other_city) conflicts for a proposed stop.
-
-    same_city  — same city, dates touch or overlap. Likely a duplicate.
-    other_city — different city, dates overlap *strictly*. Physically
-                 impossible (can't be in two places at once).
-
-    A touching boundary (London ends 17 Oct, Paris starts 17 Oct) is only
-    a conflict for the same city — for different cities that's a normal
-    travel day. `exclude_idx` skips a stop by its position, used by the
-    edit handler to avoid warning against itself.
-    """
-    cl = new_city.strip().lower()
-    same_city = []
-    other_city = []
-    for i, s in enumerate(existing_stops):
-        if exclude_idx is not None and i == exclude_idx:
-            continue
-        s_city = s["city"].strip().lower()
-        if s_city == cl:
-            if s["start_date"] <= new_end_iso and s["end_date"] >= new_start_iso:
-                same_city.append(s)
-        else:
-            if s["start_date"] < new_end_iso and s["end_date"] > new_start_iso:
-                other_city.append(s)
-    return same_city, other_city
-
 def _find_stop_conflicts(existing_stops, new_city, new_start_iso, new_end_iso,
                          exclude_idx=None):
     """
@@ -1321,46 +1290,61 @@ def _trip_dropdown_options(exec_id, current_trip_id=None):
 # =========================================================
 
 
-def _render_brief_panel(container_key, brief_html, default_filename):
+def _render_brief_panel(
+    container_key, brief_html, brief_pdf=None, brief_docx=None,
+    default_filename=None, default_stem=None,
+):
     """
-    Render the standard 'Prep Brief' expander content.
-
-    Given a pre-generated HTML string, shows:
-      - Preview toggle (inline render via components.html)
-      - Download button
-      - Open in new tab via data URL (Streamlit download as workaround)
+    Render the standard 'Prep Brief' panel.
+    Accepts either default_filename (legacy) or default_stem (new).
     """
     if not brief_html:
         st.caption("No brief available — the record may be empty.")
         return
 
-    col_a, col_b = st.columns([1, 1])
+    stem = default_stem or (default_filename.rsplit(".", 1)[0] if default_filename else "brief")
+
+    preview_key = f"{container_key}_preview_open"
+    col_a, col_b, col_c, col_d = st.columns(4)
+
     with col_a:
-        preview_key = f"{container_key}_preview_open"
         if st.button(
-            "👁 Preview" if not st.session_state.get(preview_key) else "🙈 Hide",
+            "🙈 Hide" if st.session_state.get(preview_key) else "👁 Preview",
             key=f"{container_key}_preview_btn",
             use_container_width=True,
         ):
-            st.session_state[preview_key] = not st.session_state.get(
-                preview_key, False
-            )
+            st.session_state[preview_key] = not st.session_state.get(preview_key, False)
             st.rerun()
     with col_b:
         st.download_button(
-            "⬇️ Download HTML",
-            data=brief_html,
-            file_name=default_filename,
-            mime="text/html",
-            key=f"{container_key}_download_btn",
-            use_container_width=True,
+            "⬇️ HTML", data=brief_html,
+            file_name=f"{stem}.html", mime="text/html",
+            key=f"{container_key}_dl_html", use_container_width=True,
         )
+    with col_c:
+        if brief_pdf:
+            st.download_button(
+                "⬇️ PDF", data=brief_pdf,
+                file_name=f"{stem}.pdf", mime="application/pdf",
+                key=f"{container_key}_dl_pdf", use_container_width=True,
+            )
+        else:
+            st.button("PDF n/a", disabled=True, key=f"{container_key}_pdf_na",
+                      use_container_width=True)
+    with col_d:
+        if brief_docx:
+            st.download_button(
+                "⬇️ Word", data=brief_docx,
+                file_name=f"{stem}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                key=f"{container_key}_dl_docx", use_container_width=True,
+            )
+        else:
+            st.button("Word n/a", disabled=True, key=f"{container_key}_docx_na",
+                      use_container_width=True)
 
-    if st.session_state.get(f"{container_key}_preview_open", False):
-        st.caption(
-            "ℹ️ Links in the preview may not open. "
-            "Download the HTML to use them."
-        )
+    if st.session_state.get(preview_key, False):
+        st.caption("ℹ️ Links in the preview may not open. Download to use them.")
         components.html(brief_html, height=600, scrolling=True)
 
 # =========================================================
@@ -4818,12 +4802,6 @@ def _clear_dialog_meeting_id():
     st.session_state.pop("dialog_meeting_id", None)
 
 
-@st.dialog(
-    "📅 Meeting",
-    width="large",
-    on_dismiss=_clear_dialog_meeting_id,
-)
-
 # =========================================================
 # COMMUNICATIONS DIALOG
 # =========================================================
@@ -6504,6 +6482,7 @@ def _render_speaking_detail_dialog(engagement_id):
         st.warning("Engagement not found.")
         return
 
+    exec_id = eng["exec_id"]        # ← add this
     st.subheader(f"🎤 {eng['title']}")
     st.caption(
         f"**{eng.get('executive_name') or '—'}**  ·  "
@@ -7226,6 +7205,12 @@ def _render_speaking_detail_dialog(engagement_id):
                     f"confirm_del_speak_{engagement_id}", None
                 )
                 st.rerun()
+
+@st.dialog(
+    "📅 Meeting",
+    width="large",
+    on_dismiss=_clear_dialog_meeting_id,
+)
 
 def _render_meeting_detail_dialog(meeting_id):
     meeting = db.get_meeting(meeting_id)
@@ -9041,110 +9026,122 @@ with tab_dashboard:
     # TICKTICK TASKS
     # ================================================
     if ticktick_sync.is_connected():
-        # Executive filter
-        execs_for_tt_filter = db.get_all_executives(active_only=True)
-        tt_exec_options = {"All executives": None}
-        tt_exec_options.update(
-            {e["name"]: e["id"] for e in execs_for_tt_filter}
-        )
-        tt_exec_label = st.selectbox(
-            "TickTick — filter by executive",
-            options=list(tt_exec_options.keys()),
-            key="tt_dash_exec_filter",
-        )
-        tt_exec_id_filter = tt_exec_options[tt_exec_label]
+        tt_ok = True
+        ticktick_tasks_all = []
+        ticktick_due_soon = []
+        ticktick_overdue = []
 
-        ticktick_tasks_all = db.get_ticktick_tasks_filtered(
-            exec_id=tt_exec_id_filter, open_only=True
-        )
-        ticktick_due_soon = [
-            t for t in db.get_ticktick_tasks_due_soon(days=7)
-            if tt_exec_id_filter is None
-            or db.resolve_ticktick_task_executive(t)[0]
-                == tt_exec_id_filter
-        ]
-        ticktick_overdue = [
-            t for t in ticktick_tasks_all
-            if t.get("due_date") and t["due_date"] < today_iso
-        ]
+        try:
+            execs_for_tt_filter = db.get_all_executives(active_only=True)
+            tt_exec_options = {"All executives": None}
+            tt_exec_options.update(
+                {e["name"]: e["id"] for e in execs_for_tt_filter}
+            )
+            tt_exec_label = st.selectbox(
+                "TickTick — filter by executive",
+                options=list(tt_exec_options.keys()),
+                key="tt_dash_exec_filter",
+            )
+            tt_exec_id_filter = tt_exec_options[tt_exec_label]
 
-        with st.expander(
-            f"✅ TickTick — {len(ticktick_tasks_all)} open task(s)",
-            expanded=False,
-        ):
-            col_a, col_b, col_c = st.columns(3)
-            with col_a:
-                st.metric("Open", len(ticktick_tasks_all))
-            with col_b:
-                st.metric("Due (7d)", len(ticktick_due_soon))
-            with col_c:
-                st.metric("Overdue", len(ticktick_overdue))
+            ticktick_tasks_all = db.get_ticktick_tasks_filtered(
+                exec_id=tt_exec_id_filter, open_only=True
+            )
+            ticktick_due_soon = [
+                t for t in db.get_ticktick_tasks_due_soon(days=7)
+                if tt_exec_id_filter is None
+                or db.resolve_ticktick_task_executive(t)[0]
+                    == tt_exec_id_filter
+            ]
+            ticktick_overdue = [
+                t for t in ticktick_tasks_all
+                if t.get("due_date") and t["due_date"] < today_iso
+            ]
+        except Exception as e:
+            tt_ok = False
+            st.warning(
+                f"⚠️ Could not load TickTick data: {e}. "
+                "Sync or reconnect from the sidebar."
+            )
 
-            if ticktick_overdue:
-                st.markdown("**🔴 Overdue**")
-                for t in ticktick_overdue[:10]:
-                    exec_id_resolved, exec_name_resolved, tag_used = (
-                        db.resolve_ticktick_task_executive(t)
-                    )
-                    col1, col2 = st.columns([5, 1])
-                    with col1:
-                        st.markdown(f"**{t.get('title') or '—'}**")
-                        caption_bits = [f"Due: {t.get('due_date')}"]
-                        if exec_name_resolved:
-                            caption_bits.append(
-                                f"👤 {exec_name_resolved}"
-                            )
-                            if tag_used:
-                                caption_bits.append(f"`{tag_used}`")
-                        st.caption("  ·  ".join(caption_bits))
-                    with col2:
-                        if st.button(
-                            "✓",
-                            key=f"tt_complete_{t['ticktick_id']}",
-                            help="Mark complete in TickTick",
-                        ):
-                            err = ticktick_sync.complete_task(
-                                t["ticktick_id"]
-                            )
-                            if err:
-                                st.error(err)
-                            else:
-                                st.success("Completed.")
-                                st.rerun()
+        if tt_ok:
+            with st.expander(
+                f"✅ TickTick — {len(ticktick_tasks_all)} open task(s)",
+                expanded=False,
+            ):
+                col_a, col_b, col_c = st.columns(3)
+                with col_a:
+                    st.metric("Open", len(ticktick_tasks_all))
+                with col_b:
+                    st.metric("Due (7d)", len(ticktick_due_soon))
+                with col_c:
+                    st.metric("Overdue", len(ticktick_overdue))
 
-            if ticktick_due_soon:
-                st.markdown("**⏳ Due This Week**")
-                for t in ticktick_due_soon[:10]:
-                    exec_id_resolved, exec_name_resolved, tag_used = (
-                        db.resolve_ticktick_task_executive(t)
-                    )
-                    col1, col2 = st.columns([5, 1])
-                    with col1:
-                        st.markdown(f"**{t.get('title') or '—'}**")
-                        caption_bits = [f"Due: {t.get('due_date')}"]
-                        if exec_name_resolved:
-                            caption_bits.append(
-                                f"👤 {exec_name_resolved}"
-                            )
-                            if tag_used:
-                                caption_bits.append(f"`{tag_used}`")
-                        st.caption("  ·  ".join(caption_bits))
-                    with col2:
-                        if st.button(
-                            "✓",
-                            key=f"tt_complete_week_{t['ticktick_id']}",
-                        ):
-                            err = ticktick_sync.complete_task(
-                                t["ticktick_id"]
-                            )
-                            if err:
-                                st.error(err)
-                            else:
-                                st.success("Completed.")
-                                st.rerun()
+                if ticktick_overdue:
+                    st.markdown("**🔴 Overdue**")
+                    for t in ticktick_overdue[:10]:
+                        exec_id_resolved, exec_name_resolved, tag_used = (
+                            db.resolve_ticktick_task_executive(t)
+                        )
+                        col1, col2 = st.columns([5, 1])
+                        with col1:
+                            st.markdown(f"**{t.get('title') or '—'}**")
+                            caption_bits = [f"Due: {t.get('due_date')}"]
+                            if exec_name_resolved:
+                                caption_bits.append(
+                                    f"👤 {exec_name_resolved}"
+                                )
+                                if tag_used:
+                                    caption_bits.append(f"`{tag_used}`")
+                            st.caption("  ·  ".join(caption_bits))
+                        with col2:
+                            if st.button(
+                                "✓",
+                                key=f"tt_complete_{t['ticktick_id']}",
+                                help="Mark complete in TickTick",
+                            ):
+                                err = ticktick_sync.complete_task(
+                                    t["ticktick_id"]
+                                )
+                                if err:
+                                    st.error(err)
+                                else:
+                                    st.success("Completed.")
+                                    st.rerun()
 
-            if not ticktick_tasks_all:
-                st.caption("No open tasks in TickTick.")
+                if ticktick_due_soon:
+                    st.markdown("**⏳ Due This Week**")
+                    for t in ticktick_due_soon[:10]:
+                        exec_id_resolved, exec_name_resolved, tag_used = (
+                            db.resolve_ticktick_task_executive(t)
+                        )
+                        col1, col2 = st.columns([5, 1])
+                        with col1:
+                            st.markdown(f"**{t.get('title') or '—'}**")
+                            caption_bits = [f"Due: {t.get('due_date')}"]
+                            if exec_name_resolved:
+                                caption_bits.append(
+                                    f"👤 {exec_name_resolved}"
+                                )
+                                if tag_used:
+                                    caption_bits.append(f"`{tag_used}`")
+                            st.caption("  ·  ".join(caption_bits))
+                        with col2:
+                            if st.button(
+                                "✓",
+                                key=f"tt_complete_week_{t['ticktick_id']}",
+                            ):
+                                err = ticktick_sync.complete_task(
+                                    t["ticktick_id"]
+                                )
+                                if err:
+                                    st.error(err)
+                                else:
+                                    st.success("Completed.")
+                                    st.rerun()
+
+                if not ticktick_tasks_all:
+                    st.caption("No open tasks in TickTick.")
 
         st.divider()
     # ================================================
