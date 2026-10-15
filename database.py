@@ -898,6 +898,26 @@ def init_db():
             FOREIGN KEY (exec_id) REFERENCES executives(id) ON DELETE SET NULL
         )""")
 
+        # --- Budget templates ---
+        c.execute("""CREATE TABLE IF NOT EXISTS budget_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT,
+            event_type TEXT,
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS budget_template_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            template_id INTEGER NOT NULL,
+            category TEXT,
+            description TEXT,
+            default_amount REAL DEFAULT 0,
+            sort_order INTEGER DEFAULT 0,
+            FOREIGN KEY (template_id) REFERENCES budget_templates(id) ON DELETE CASCADE
+        )""")
+
         # --- Indexes for new tables ---
         for idx in [
             "CREATE INDEX IF NOT EXISTS idx_meetings_exec ON meetings(exec_id)",
@@ -933,6 +953,8 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_comms_contact ON communications(contact_id)",
             "CREATE INDEX IF NOT EXISTS idx_comms_date ON communications(comm_date)",
             "CREATE INDEX IF NOT EXISTS idx_comms_next_action ON communications(next_action_date)",
+            "CREATE INDEX IF NOT EXISTS idx_budget_templates_active ON budget_templates(is_active)",
+            "CREATE INDEX IF NOT EXISTS idx_budget_template_items_template ON budget_template_items(template_id)",
         ]:
             try:
                 c.execute(idx)
@@ -5690,3 +5712,754 @@ def get_events_with_overdue_rsvps(days_ahead=14):
         return [dict(r) for r in c.fetchall()]
     finally:
         conn.close()
+
+
+# =========================================================
+# VENDORS
+# =========================================================
+
+
+def add_vendor(
+    name, category=None, contact_id=None, email=None, phone=None,
+    website=None, address=None, city=None, country=None, notes=None,
+    preferred=0, rating=None, is_active=1,
+):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO vendors
+               (name, category, contact_id, email, phone, website,
+                address, city, country, notes, preferred, rating, is_active)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                name, category, contact_id, email, phone, website,
+                address, city, country, notes, preferred, rating,
+                1 if is_active else 0,
+            ),
+        )
+        conn.commit()
+        return c.lastrowid
+    finally:
+        conn.close()
+
+
+def get_vendors(category=None, active_only=True, preferred_only=False,
+                search=None):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        conditions, params = [], []
+        if active_only:
+            conditions.append("is_active = 1")
+        if category:
+            conditions.append("category = ?")
+            params.append(category)
+        if preferred_only:
+            conditions.append("preferred = 1")
+        if search:
+            like = f"%{search.lower()}%"
+            conditions.append(
+                "(LOWER(name) LIKE ? OR LOWER(COALESCE(email,'')) LIKE ? "
+                "OR LOWER(COALESCE(city,'')) LIKE ?)"
+            )
+            params.extend([like, like, like])
+        q = "SELECT * FROM vendors"
+        if conditions:
+            q += " WHERE " + " AND ".join(conditions)
+        q += " ORDER BY preferred DESC, name"
+        c.execute(q, params)
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_vendor(vendor_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute("SELECT * FROM vendors WHERE id = ?", (vendor_id,))
+        row = c.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def update_vendor(vendor_id, **kwargs):
+    if not kwargs:
+        return
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        fields, params = [], []
+        for k, v in kwargs.items():
+            fields.append(f"{k} = ?")
+            params.append(v)
+        params.append(vendor_id)
+        c.execute(
+            f"UPDATE vendors SET {', '.join(fields)} WHERE id = ?", params
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_vendor(vendor_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM vendors WHERE id = ?", (vendor_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def find_duplicate_vendors(name, exclude_id=None):
+    if not name:
+        return []
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        q = "SELECT * FROM vendors WHERE LOWER(name) = LOWER(?)"
+        params = [name.strip()]
+        if exclude_id:
+            q += " AND id != ?"
+            params.append(exclude_id)
+        c.execute(q, params)
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+# --- Vendor engagements ---
+
+
+def add_vendor_engagement(
+    event_id, vendor_id, category=None, status="shortlisted",
+    quote_amount=None, agreed_amount=None, currency="USD",
+    contract_status="not_sent", contract_url=None,
+    deposit_amount=None, deposit_due_date=None, deposit_paid_date=None,
+    balance_amount=None, balance_due_date=None, balance_paid_date=None,
+    payment_terms=None, notes=None,
+):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO vendor_engagements
+               (event_id, vendor_id, category, status, quote_amount,
+                agreed_amount, currency, contract_status, contract_url,
+                deposit_amount, deposit_due_date, deposit_paid_date,
+                balance_amount, balance_due_date, balance_paid_date,
+                payment_terms, notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                event_id, vendor_id, category, status, quote_amount,
+                agreed_amount, currency, contract_status, contract_url,
+                deposit_amount, deposit_due_date, deposit_paid_date,
+                balance_amount, balance_due_date, balance_paid_date,
+                payment_terms, notes,
+            ),
+        )
+        conn.commit()
+        return c.lastrowid
+    finally:
+        conn.close()
+
+
+def get_vendor_engagements(event_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT ve.*, v.name AS vendor_name, v.email AS vendor_email,
+                      v.phone AS vendor_phone, v.category AS vendor_category
+               FROM vendor_engagements ve
+               JOIN vendors v ON ve.vendor_id = v.id
+               WHERE ve.event_id = ?
+               ORDER BY ve.status, v.name""",
+            (event_id,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_vendor_engagement(engagement_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT ve.*, v.name AS vendor_name
+               FROM vendor_engagements ve
+               JOIN vendors v ON ve.vendor_id = v.id
+               WHERE ve.id = ?""",
+            (engagement_id,),
+        )
+        row = c.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def update_vendor_engagement(engagement_id, **kwargs):
+    if not kwargs:
+        return
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        fields, params = [], []
+        for k, v in kwargs.items():
+            fields.append(f"{k} = ?")
+            params.append(v)
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(engagement_id)
+        c.execute(
+            f"UPDATE vendor_engagements SET {', '.join(fields)} "
+            "WHERE id = ?",
+            params,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_vendor_engagement(engagement_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM vendor_engagements WHERE id = ?", (engagement_id,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# --- Vendor payments ---
+
+
+def add_vendor_payment(
+    vendor_engagement_id, amount, currency="USD",
+    due_date=None, paid_date=None, method=None, reference=None, notes=None,
+):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO vendor_payments
+               (vendor_engagement_id, amount, currency, due_date,
+                paid_date, method, reference, notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                vendor_engagement_id, amount, currency, due_date,
+                paid_date, method, reference, notes,
+            ),
+        )
+        conn.commit()
+        new_id = c.lastrowid
+    finally:
+        conn.close()
+
+    _recompute_budget_from_engagement(vendor_engagement_id)
+    return new_id
+
+
+def get_vendor_payments(engagement_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT * FROM vendor_payments
+               WHERE vendor_engagement_id = ?
+               ORDER BY due_date IS NULL, due_date ASC, id""",
+            (engagement_id,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def update_vendor_payment(payment_id, **kwargs):
+    if not kwargs:
+        return
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        fields, params = [], []
+        for k, v in kwargs.items():
+            fields.append(f"{k} = ?")
+            params.append(v)
+        params.append(payment_id)
+        c.execute(
+            f"UPDATE vendor_payments SET {', '.join(fields)} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT vendor_engagement_id FROM vendor_payments WHERE id = ?",
+            (payment_id,),
+        )
+        row = c.fetchone()
+        if row:
+            _recompute_budget_from_engagement(row[0])
+    finally:
+        conn.close()
+
+
+def delete_vendor_payment(payment_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT vendor_engagement_id FROM vendor_payments WHERE id = ?",
+            (payment_id,),
+        )
+        row = c.fetchone()
+        engagement_id = row[0] if row else None
+        c.execute("DELETE FROM vendor_payments WHERE id = ?", (payment_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    if engagement_id:
+        _recompute_budget_from_engagement(engagement_id)
+
+
+def get_payments_due(start_date=None, end_date=None):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        conditions = ["vp.paid_date IS NULL", "vp.due_date IS NOT NULL"]
+        params = []
+        if start_date:
+            conditions.append("vp.due_date >= ?")
+            params.append(start_date)
+        if end_date:
+            conditions.append("vp.due_date <= ?")
+            params.append(end_date)
+        q = """SELECT vp.*, v.name AS vendor_name,
+                      ve.event_id, ev.name AS event_name
+               FROM vendor_payments vp
+               JOIN vendor_engagements ve ON vp.vendor_engagement_id = ve.id
+               JOIN vendors v ON ve.vendor_id = v.id
+               JOIN events ev ON ve.event_id = ev.id
+               WHERE """
+        q += " AND ".join(conditions)
+        q += " ORDER BY vp.due_date ASC"
+        c.execute(q, params)
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+# =========================================================
+# EVENT BUDGET
+# =========================================================
+
+
+def add_budget_item(
+    event_id, category=None, description=None,
+    estimated_amount=0, actual_amount=0, paid_amount=0,
+    vendor_engagement_id=None, status="estimated",
+    receipt_urls=None, invoice_urls=None, notes=None, sort_order=0,
+):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO event_budget_items
+               (event_id, category, description, estimated_amount,
+                actual_amount, paid_amount, vendor_engagement_id,
+                status, receipt_urls, invoice_urls, notes, sort_order)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                event_id, category, description, estimated_amount,
+                actual_amount, paid_amount, vendor_engagement_id,
+                status, receipt_urls, invoice_urls, notes, sort_order,
+            ),
+        )
+        conn.commit()
+        return c.lastrowid
+    finally:
+        conn.close()
+
+
+def get_budget_items(event_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT bi.*, v.name AS vendor_name
+               FROM event_budget_items bi
+               LEFT JOIN vendor_engagements ve
+                    ON bi.vendor_engagement_id = ve.id
+               LEFT JOIN vendors v ON ve.vendor_id = v.id
+               WHERE bi.event_id = ?
+               ORDER BY bi.sort_order ASC, bi.id ASC""",
+            (event_id,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_budget_item(item_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT * FROM event_budget_items WHERE id = ?", (item_id,)
+        )
+        row = c.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def update_budget_item(item_id, **kwargs):
+    if not kwargs:
+        return
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        fields, params = [], []
+        for k, v in kwargs.items():
+            fields.append(f"{k} = ?")
+            params.append(v)
+        params.append(item_id)
+        c.execute(
+            f"UPDATE event_budget_items SET {', '.join(fields)} "
+            "WHERE id = ?",
+            params,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_budget_item(item_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM event_budget_items WHERE id = ?", (item_id,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_budget_summary(event_id):
+    """Return totals for an event's budget."""
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT
+                 COALESCE(SUM(estimated_amount), 0),
+                 COALESCE(SUM(actual_amount), 0),
+                 COALESCE(SUM(paid_amount), 0),
+                 COUNT(*)
+               FROM event_budget_items
+               WHERE event_id = ?""",
+            (event_id,),
+        )
+        row = c.fetchone()
+        return {
+            "estimated": row[0] or 0,
+            "actual": row[1] or 0,
+            "paid": row[2] or 0,
+            "item_count": row[3] or 0,
+        }
+    finally:
+        conn.close()
+
+
+def _recompute_budget_from_engagement(engagement_id):
+    """
+    When a payment is recorded, keep the linked budget line item's
+    paid_amount in sync. Also ensure a line item exists if the
+    engagement is confirmed with an agreed amount.
+    """
+    engagement = get_vendor_engagement(engagement_id)
+    if not engagement:
+        return
+
+    event_id = engagement["event_id"]
+    vendor_name = engagement.get("vendor_name") or "Vendor"
+    category = engagement.get("category") or "Other"
+    agreed = engagement.get("agreed_amount") or 0
+    currency = engagement.get("currency") or "USD"
+
+    # Sum payments
+    payments = get_vendor_payments(engagement_id)
+    paid_sum = sum(
+        float(p.get("amount") or 0)
+        for p in payments
+        if p.get("paid_date")
+    )
+
+    # Find the linked line item, if any
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT * FROM event_budget_items
+               WHERE vendor_engagement_id = ?""",
+            (engagement_id,),
+        )
+        item = c.fetchone()
+    finally:
+        conn.close()
+
+    if item:
+        # Update existing
+        new_status = item["status"]
+        if paid_sum > 0 and paid_sum >= agreed and agreed > 0:
+            new_status = "paid"
+        elif agreed > 0:
+            new_status = "committed"
+
+        update_budget_item(
+            item["id"],
+            actual_amount=agreed,
+            paid_amount=paid_sum,
+            status=new_status,
+            description=item["description"] or f"{vendor_name} — {category}",
+        )
+    else:
+        # Auto-create a line item if this is a confirmed engagement
+        if engagement.get("status") == "confirmed" and agreed > 0:
+            new_status = "paid" if paid_sum >= agreed else "committed"
+            add_budget_item(
+                event_id=event_id,
+                category=category,
+                description=f"{vendor_name} — {category}",
+                estimated_amount=agreed,
+                actual_amount=agreed,
+                paid_amount=paid_sum,
+                vendor_engagement_id=engagement_id,
+                status=new_status,
+                sort_order=999,
+            )
+
+
+def recompute_budget_after_engagement_change(engagement_id):
+    """Call after confirming a vendor or updating its agreed amount."""
+    _recompute_budget_from_engagement(engagement_id)
+
+
+def get_events_over_budget(threshold=0.9):
+    """
+    Return events where sum(actual) / budget_total > threshold.
+    Events with budget_total = 0 are skipped.
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT ev.*, e.name AS executive_name,
+                      (SELECT COALESCE(SUM(actual_amount), 0)
+                       FROM event_budget_items bi
+                       WHERE bi.event_id = ev.id) AS spent_actual,
+                      (SELECT COALESCE(SUM(estimated_amount), 0)
+                       FROM event_budget_items bi
+                       WHERE bi.event_id = ev.id) AS spent_estimated
+               FROM events ev
+               LEFT JOIN executives e ON ev.exec_id = e.id
+               WHERE ev.budget_total > 0
+                 AND ev.status NOT IN ('completed', 'cancelled')
+               ORDER BY ev.event_date ASC"""
+        )
+        rows = [dict(r) for r in c.fetchall()]
+        return [
+            r for r in rows
+            if (r.get("spent_actual") or 0) / r["budget_total"]
+            >= threshold
+        ]
+    finally:
+        conn.close()
+
+
+def get_unsigned_contracts_within_days(days=7):
+    today = datetime.now().date()
+    cutoff = (today + timedelta(days=days)).isoformat()
+    today_iso = today.isoformat()
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT ve.*, v.name AS vendor_name,
+                      ev.name AS event_name, ev.event_date
+               FROM vendor_engagements ve
+               JOIN vendors v ON ve.vendor_id = v.id
+               JOIN events ev ON ve.event_id = ev.id
+               WHERE ve.contract_status IN ('not_sent','sent')
+                 AND ev.event_date >= ?
+                 AND ev.event_date <= ?
+               ORDER BY ev.event_date ASC""",
+            (today_iso, cutoff),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+# =========================================================
+# BUDGET TEMPLATES
+# =========================================================
+
+
+BUDGET_TEMPLATE_DEFAULTS = {
+    "Client Dinner": [
+        ("Venue", "Restaurant reservation", 0),
+        ("Catering", "Food & beverage", 0),
+        ("Transport", "Car service", 0),
+        ("Decor", "Flowers, candles", 0),
+        ("Staff", "Server, coordinator", 0),
+        ("Misc", "Gratuity, incidentals", 0),
+    ],
+    "Offsite / Retreat": [
+        ("Venue", "Meeting space rental", 0),
+        ("Catering", "Breakfast, lunch, snacks", 0),
+        ("AV", "Projector, mics, tech support", 0),
+        ("Transport", "Shuttles, parking", 0),
+        ("Accommodation", "Room block", 0),
+        ("Materials", "Printed agendas, name badges", 0),
+        ("Staff", "Coordinator, facilitator", 0),
+        ("Misc", "Contingency", 0),
+    ],
+    "Conference / Speaking": [
+        ("Travel", "Flights", 0),
+        ("Accommodation", "Hotel", 0),
+        ("Ground Transport", "Taxis, rental car", 0),
+        ("Meals", "Per diem", 0),
+        ("Materials", "Printed handouts", 0),
+        ("Misc", "Registration fees, incidentals", 0),
+    ],
+    "Board Meeting": [
+        ("Venue", "Meeting room", 0),
+        ("Catering", "Coffee, lunch", 0),
+        ("AV", "Video conference setup", 0),
+        ("Materials", "Board packets (print/digital)", 0),
+        ("Staff", "Coordinator", 0),
+    ],
+}
+
+
+def add_budget_template(name, description=None, event_type=None,
+                        items=None, is_active=1):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO budget_templates
+               (name, description, event_type, is_active)
+               VALUES (?, ?, ?, ?)""",
+            (name, description, event_type, 1 if is_active else 0),
+        )
+        template_id = c.lastrowid
+        for i, item in enumerate(items or []):
+            category, description_, default_amount = (
+                item[0], item[1], item[2] if len(item) > 2 else 0
+            )
+            c.execute(
+                """INSERT INTO budget_template_items
+                   (template_id, category, description, default_amount,
+                    sort_order)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (template_id, category, description_, default_amount, i),
+            )
+        conn.commit()
+        return template_id
+    finally:
+        conn.close()
+
+
+def get_budget_templates(active_only=True):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        q = "SELECT * FROM budget_templates"
+        if active_only:
+            q += " WHERE is_active = 1"
+        q += " ORDER BY name"
+        c.execute(q)
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_budget_template_items(template_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT * FROM budget_template_items
+               WHERE template_id = ?
+               ORDER BY sort_order, id""",
+            (template_id,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def delete_budget_template(template_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM budget_templates WHERE id = ?", (template_id,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def apply_budget_template_to_event(event_id, template_id):
+    items = get_budget_template_items(template_id)
+    created = 0
+    for item in items:
+        add_budget_item(
+            event_id=event_id,
+            category=item.get("category"),
+            description=item.get("description"),
+            estimated_amount=item.get("default_amount") or 0,
+            status="estimated",
+            sort_order=item.get("sort_order") or 0,
+        )
+        created += 1
+    return created
+
+
+def seed_default_budget_templates():
+    """Create the built-in templates if they don't exist yet."""
+    existing = {t["name"] for t in get_budget_templates(active_only=False)}
+    for name, items in BUDGET_TEMPLATE_DEFAULTS.items():
+        if name not in existing:
+            add_budget_template(
+                name=name,
+                description=f"Default template: {name}",
+                items=items,
+            )

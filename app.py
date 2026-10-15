@@ -1086,6 +1086,80 @@ def _guest_status_label(s):
     return GUEST_STATUS_LABELS.get(s, s or "—")
 
 # =========================================================
+# VENDOR & BUDGET CONSTANTS
+# =========================================================
+
+VENDOR_CATEGORIES = [
+    "Venue", "Catering", "AV", "Florist", "Photographer",
+    "Transport", "Staff", "Printing", "Decor", "Entertainment",
+    "Security", "Other",
+]
+
+VENDOR_ENGAGEMENT_STATUSES = [
+    "shortlisted", "contacted", "quoted", "negotiating",
+    "confirmed", "cancelled",
+]
+
+VENDOR_ENGAGEMENT_STATUS_LABELS = {
+    "shortlisted": "📝 Shortlisted",
+    "contacted": "📤 Contacted",
+    "quoted": "💬 Quoted",
+    "negotiating": "🤝 Negotiating",
+    "confirmed": "✅ Confirmed",
+    "cancelled": "🚫 Cancelled",
+}
+
+CONTRACT_STATUSES = [
+    "not_sent", "sent", "signed", "declined",
+]
+
+CONTRACT_STATUS_LABELS = {
+    "not_sent": "— Not Sent",
+    "sent": "📤 Sent",
+    "signed": "✍️ Signed",
+    "declined": "❌ Declined",
+}
+
+PAYMENT_METHODS = [
+    "bank_transfer", "card", "cash", "check", "other",
+]
+
+PAYMENT_METHOD_LABELS = {
+    "bank_transfer": "🏦 Bank Transfer",
+    "card": "💳 Card",
+    "cash": "💵 Cash",
+    "check": "🧾 Check",
+    "other": "📌 Other",
+}
+
+BUDGET_ITEM_STATUSES = [
+    "estimated", "committed", "paid", "reconciled",
+]
+
+BUDGET_ITEM_STATUS_LABELS = {
+    "estimated": "📝 Estimated",
+    "committed": "🤝 Committed",
+    "paid": "✅ Paid",
+    "reconciled": "🔒 Reconciled",
+}
+
+
+def _vendor_status_label(s):
+    return VENDOR_ENGAGEMENT_STATUS_LABELS.get(s, s or "—")
+
+
+def _contract_status_label(s):
+    return CONTRACT_STATUS_LABELS.get(s, s or "—")
+
+
+def _payment_method_label(m):
+    return PAYMENT_METHOD_LABELS.get(m, m or "—")
+
+
+def _budget_item_status_label(s):
+    return BUDGET_ITEM_STATUS_LABELS.get(s, s or "—")
+
+# =========================================================
 # PAGE CONFIG
 # =========================================================
 
@@ -4576,7 +4650,288 @@ def _render_event_detail_dialog(event_id):
                             seating_preference=seating or None,
                         )
                         st.rerun()
+    st.divider()
 
+    # ================================================
+    # SECTION: Vendors
+    # ================================================
+    st.markdown("**🏢 Vendors**")
+    engagements = db.get_vendor_engagements(event_id)
+
+    if engagements:
+        for eng in engagements:
+            col1, col2, col3, col4 = st.columns([3, 2, 2, 0.5])
+            with col1:
+                st.markdown(f"**{eng['vendor_name']}**")
+                if eng.get("category"):
+                    st.caption(eng["category"])
+                if eng.get("quote_amount") and eng.get("agreed_amount"):
+                    st.caption(
+                        f"Quote: {fmt_money(eng['quote_amount'], eng.get('currency') or 'USD')}  ·  "
+                        f"Agreed: {fmt_money(eng['agreed_amount'], eng.get('currency') or 'USD')}"
+                    )
+                elif eng.get("agreed_amount"):
+                    st.caption(
+                        f"Agreed: {fmt_money(eng['agreed_amount'], eng.get('currency') or 'USD')}"
+                    )
+            with col2:
+                current = eng.get("status") or "shortlisted"
+                new_status = st.selectbox(
+                    "Status",
+                    options=VENDOR_ENGAGEMENT_STATUSES,
+                    index=(
+                        VENDOR_ENGAGEMENT_STATUSES.index(current)
+                        if current in VENDOR_ENGAGEMENT_STATUSES else 0
+                    ),
+                    format_func=_vendor_status_label,
+                    key=f"eng_status_list_{eng['id']}",
+                    label_visibility="collapsed",
+                )
+                if new_status != current:
+                    db.update_vendor_engagement(
+                        eng["id"], status=new_status
+                    )
+                    if new_status == "confirmed":
+                        db.recompute_budget_after_engagement_change(
+                            eng["id"]
+                        )
+                    st.rerun()
+            with col3:
+                contract = eng.get("contract_status") or "not_sent"
+                st.caption(_contract_status_label(contract))
+                if eng.get("contract_url"):
+                    st.markdown(f"[Open contract]({eng['contract_url']})")
+            with col4:
+                if st.button(
+                    "📂", key=f"eng_open_{eng['id']}",
+                    help="Open engagement detail / payments",
+                ):
+                    st.session_state["dialog_engagement_id"] = eng["id"]
+    else:
+        st.caption("No vendors engaged yet.")
+
+    with st.expander("➕ Engage a Vendor", expanded=False):
+        with st.form(key=f"eng_add_{event_id}"):
+            vendors_list = db.get_vendors(active_only=True)
+            if not vendors_list:
+                st.info(
+                    "No vendors in the directory yet. Add one in the "
+                    "Vendors tab first."
+                )
+            else:
+                vendor_options = {
+                    f"{v['name']} ({v.get('category') or '—'})": v["id"]
+                    for v in vendors_list
+                }
+                sel_label = st.selectbox(
+                    "Vendor*",
+                    options=list(vendor_options.keys()),
+                    key=f"eng_add_vendor_{event_id}",
+                )
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    eng_cat = st.selectbox(
+                        "Category (for this engagement)",
+                        options=VENDOR_CATEGORIES,
+                        key=f"eng_add_cat_{event_id}",
+                    )
+                    eng_quote = st.number_input(
+                        "Quote Amount", min_value=0.0, step=50.0,
+                        value=0.0, key=f"eng_add_quote_{event_id}",
+                    )
+                with col_b:
+                    eng_status = st.selectbox(
+                        "Status",
+                        options=VENDOR_ENGAGEMENT_STATUSES,
+                        format_func=_vendor_status_label,
+                        key=f"eng_add_status_{event_id}",
+                    )
+                    eng_agreed = st.number_input(
+                        "Agreed Amount", min_value=0.0, step=50.0,
+                        value=0.0, key=f"eng_add_agreed_{event_id}",
+                    )
+                eng_currency = st.text_input(
+                    "Currency", value=event.get("currency") or "USD",
+                    key=f"eng_add_currency_{event_id}",
+                )
+                eng_notes = st.text_area(
+                    "Notes", key=f"eng_add_notes_{event_id}", height=60
+                )
+                if st.form_submit_button("➕ Engage"):
+                    vendor_id = vendor_options[sel_label]
+                    new_eng_id = db.add_vendor_engagement(
+                        event_id=event_id,
+                        vendor_id=vendor_id,
+                        category=eng_cat,
+                        status=eng_status,
+                        quote_amount=eng_quote or None,
+                        agreed_amount=eng_agreed or None,
+                        currency=eng_currency,
+                        notes=eng_notes or None,
+                    )
+                    if eng_status == "confirmed" and eng_agreed > 0:
+                        db.recompute_budget_after_engagement_change(
+                            new_eng_id
+                        )
+                    st.success("✅ Vendor engaged.")
+                    st.rerun()
+
+    st.divider()
+
+    # ================================================
+    # SECTION: Budget
+    # ================================================
+    st.markdown("**💰 Budget**")
+    summary = db.get_budget_summary(event_id)
+    budget_total = event.get("budget_total") or 0
+    currency = event.get("currency") or "USD"
+
+    col_a, col_b, col_c, col_d = st.columns(4)
+    with col_a:
+        st.metric(
+            "Budget Total",
+            fmt_money(budget_total, currency),
+        )
+    with col_b:
+        st.metric(
+            "Estimated",
+            fmt_money(summary["estimated"], currency),
+        )
+    with col_c:
+        st.metric(
+            "Actual",
+            fmt_money(summary["actual"], currency),
+        )
+    with col_d:
+        st.metric(
+            "Paid",
+            fmt_money(summary["paid"], currency),
+        )
+
+    # Over-budget alert
+    if budget_total > 0:
+        ratio = summary["actual"] / budget_total
+        if ratio >= 1:
+            st.error(
+                f"🔴 Over budget by "
+                f"{fmt_money(summary['actual'] - budget_total, currency)}"
+            )
+        elif ratio >= 0.9:
+            st.warning(
+                f"⚠️ At {ratio*100:.0f}% of budget "
+                f"({fmt_money(summary['actual'], currency)} of "
+                f"{fmt_money(budget_total, currency)})"
+            )
+
+    items = db.get_budget_items(event_id)
+    if items:
+        for item in items:
+            col1, col2, col3, col4 = st.columns([3, 2, 2, 0.5])
+            with col1:
+                st.markdown(
+                    f"**{item.get('description') or '—'}**"
+                )
+                if item.get("category"):
+                    st.caption(item["category"])
+                if item.get("vendor_name"):
+                    st.caption(f"🏢 {item['vendor_name']}")
+            with col2:
+                st.caption(
+                    f"Est: {fmt_money(item.get('estimated_amount') or 0, currency)}"
+                )
+                st.caption(
+                    f"Act: {fmt_money(item.get('actual_amount') or 0, currency)}"
+                )
+            with col3:
+                st.caption(
+                    f"Paid: {fmt_money(item.get('paid_amount') or 0, currency)}"
+                )
+                st.caption(
+                    _budget_item_status_label(item.get("status"))
+                )
+            with col4:
+                if st.button(
+                    "🗑️", key=f"bi_del_{item['id']}",
+                    help="Delete this line item",
+                ):
+                    db.delete_budget_item(item["id"])
+                    st.rerun()
+    else:
+        st.caption("No budget line items yet.")
+
+    # Apply template button
+    with st.expander("➕ Add Line Item", expanded=False):
+        if st.button(
+            "📋 Apply a Template",
+            key=f"apply_tpl_{event_id}",
+        ):
+            st.session_state[f"show_apply_tpl_{event_id}"] = True
+
+        if st.session_state.get(f"show_apply_tpl_{event_id}", False):
+            templates = db.get_budget_templates()
+            if templates:
+                tpl_options = {t["name"]: t["id"] for t in templates}
+                tpl_sel = st.selectbox(
+                    "Template",
+                    options=list(tpl_options.keys()),
+                    key=f"tpl_pick_{event_id}",
+                )
+                if st.button(
+                    "Apply", key=f"tpl_apply_btn_{event_id}"
+                ):
+                    n = db.apply_budget_template_to_event(
+                        event_id, tpl_options[tpl_sel]
+                    )
+                    st.success(f"✅ Added {n} line items.")
+                    st.session_state.pop(
+                        f"show_apply_tpl_{event_id}", None
+                    )
+                    st.rerun()
+            else:
+                st.caption("No templates available.")
+
+        with st.form(key=f"bi_add_{event_id}"):
+            col_a, col_b = st.columns(2)
+            with col_a:
+                bi_cat = st.selectbox(
+                    "Category",
+                    options=VENDOR_CATEGORIES,
+                    key=f"bi_cat_{event_id}",
+                )
+                bi_est = st.number_input(
+                    "Estimated", min_value=0.0, step=50.0, value=0.0,
+                    key=f"bi_est_{event_id}",
+                )
+            with col_b:
+                bi_desc = st.text_input(
+                    "Description", key=f"bi_desc_{event_id}"
+                )
+                bi_act = st.number_input(
+                    "Actual", min_value=0.0, step=50.0, value=0.0,
+                    key=f"bi_act_{event_id}",
+                )
+            bi_paid = st.number_input(
+                "Paid", min_value=0.0, step=50.0, value=0.0,
+                key=f"bi_paid_{event_id}",
+            )
+            bi_notes = st.text_area(
+                "Notes", key=f"bi_notes_{event_id}", height=60
+            )
+            if st.form_submit_button("➕ Add Line Item"):
+                if not bi_desc:
+                    st.error("Description is required.")
+                else:
+                    db.add_budget_item(
+                        event_id=event_id,
+                        category=bi_cat,
+                        description=bi_desc,
+                        estimated_amount=bi_est,
+                        actual_amount=bi_act,
+                        paid_amount=bi_paid,
+                        status="estimated",
+                    )
+                    st.rerun()
+                    
     st.divider()
 
     # ================================================
@@ -4916,6 +5271,397 @@ def _render_rsvp_import_dialog(event_id):
         ):
             st.session_state.pop("dialog_rsvp_import_event_id", None)
             st.rerun()
+
+# =========================================================
+# VENDOR DETAIL DIALOG
+# =========================================================
+
+
+def _clear_dialog_vendor_id():
+    st.session_state.pop("dialog_vendor_id", None)
+
+
+@st.dialog(
+    "🏢 Vendor",
+    width="large",
+    on_dismiss=_clear_dialog_vendor_id,
+)
+def _render_vendor_detail_dialog(vendor_id):
+    vendor = db.get_vendor(vendor_id)
+    if not vendor:
+        st.warning("Vendor not found.")
+        return
+
+    st.subheader(f"🏢 {vendor['name']}")
+    if vendor.get("category"):
+        st.caption(vendor["category"])
+
+    with st.form(key=f"vendor_edit_{vendor_id}"):
+        col1, col2 = st.columns(2)
+        with col1:
+            name = st.text_input(
+                "Name*", value=vendor.get("name") or "",
+                key=f"ve_name_{vendor_id}",
+            )
+            category = st.selectbox(
+                "Category",
+                options=[""] + VENDOR_CATEGORIES,
+                index=(
+                    ([""] + VENDOR_CATEGORIES).index(vendor["category"])
+                    if vendor.get("category") in VENDOR_CATEGORIES
+                    else 0
+                ),
+                key=f"ve_cat_{vendor_id}",
+            )
+            email = st.text_input(
+                "Email", value=vendor.get("email") or "",
+                key=f"ve_email_{vendor_id}",
+            )
+            phone = st.text_input(
+                "Phone", value=vendor.get("phone") or "",
+                key=f"ve_phone_{vendor_id}",
+            )
+        with col2:
+            website = st.text_input(
+                "Website", value=vendor.get("website") or "",
+                key=f"ve_website_{vendor_id}",
+            )
+            city = st.text_input(
+                "City", value=vendor.get("city") or "",
+                key=f"ve_city_{vendor_id}",
+            )
+            country = st.text_input(
+                "Country", value=vendor.get("country") or "",
+                key=f"ve_country_{vendor_id}",
+            )
+            rating_val = st.number_input(
+                "Rating (1–5)",
+                min_value=0, max_value=5, step=1,
+                value=int(vendor.get("rating") or 0),
+                key=f"ve_rating_{vendor_id}",
+            )
+
+        address = st.text_input(
+            "Address", value=vendor.get("address") or "",
+            key=f"ve_address_{vendor_id}",
+        )
+        notes = st.text_area(
+            "Notes", value=vendor.get("notes") or "", height=80,
+            key=f"ve_notes_{vendor_id}",
+        )
+        col_a, col_b = st.columns(2)
+        with col_a:
+            preferred = st.checkbox(
+                "⭐ Preferred",
+                value=bool(vendor.get("preferred")),
+                key=f"ve_pref_{vendor_id}",
+            )
+        with col_b:
+            is_active = st.checkbox(
+                "Active",
+                value=bool(vendor.get("is_active", 1)),
+                key=f"ve_active_{vendor_id}",
+            )
+
+        col_save, col_del = st.columns(2)
+        with col_save:
+            save_clicked = st.form_submit_button("💾 Save")
+        with col_del:
+            delete_clicked = st.form_submit_button(
+                "🗑️ Delete Vendor", type="secondary"
+            )
+
+        if save_clicked:
+            if not name:
+                st.error("Name is required.")
+            else:
+                db.update_vendor(
+                    vendor_id,
+                    name=name,
+                    category=category or None,
+                    email=email or None,
+                    phone=phone or None,
+                    website=website or None,
+                    city=city or None,
+                    country=country or None,
+                    address=address or None,
+                    notes=notes or None,
+                    rating=int(rating_val) if rating_val else None,
+                    preferred=1 if preferred else 0,
+                    is_active=1 if is_active else 0,
+                )
+                st.success("✅ Saved.")
+                st.rerun()
+
+        if delete_clicked:
+            st.session_state[f"confirm_del_vendor_{vendor_id}"] = True
+
+    if st.session_state.get(f"confirm_del_vendor_{vendor_id}", False):
+        st.warning("⚠️ Delete this vendor? Engagements referencing it will also be removed.")
+        col_y, col_n = st.columns(2)
+        with col_y:
+            if st.button("Yes, Delete", key=f"vd_yes_{vendor_id}"):
+                db.delete_vendor(vendor_id)
+                st.session_state.pop(f"confirm_del_vendor_{vendor_id}", None)
+                st.session_state.pop("dialog_vendor_id", None)
+                st.rerun()
+        with col_n:
+            if st.button("Cancel", key=f"vd_no_{vendor_id}"):
+                st.session_state.pop(f"confirm_del_vendor_{vendor_id}", None)
+                st.rerun()
+
+    # ---- History: engagements this vendor appears in ----
+    st.divider()
+    st.markdown("**📜 Engagement History**")
+    conn = sqlite3.connect(db.DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT ve.*, ev.name AS event_name, ev.event_date
+               FROM vendor_engagements ve
+               JOIN events ev ON ve.event_id = ev.id
+               WHERE ve.vendor_id = ?
+               ORDER BY ev.event_date DESC""",
+            (vendor_id,),
+        )
+        rows = [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+    if not rows:
+        st.caption("No engagements yet.")
+    else:
+        total_spent = 0.0
+        for r in rows:
+            st.markdown(
+                f"**{r['event_name']}** — "
+                f"{_vendor_status_label(r.get('status'))}"
+            )
+            agreed = r.get("agreed_amount") or 0
+            total_spent += agreed
+            st.caption(
+                f"📅 {fmt_date(r.get('event_date'))}  ·  "
+                f"Agreed: {fmt_money(agreed, r.get('currency') or 'USD')}"
+            )
+            st.divider()
+        st.caption(f"**Total agreed across all events:** "
+                   f"{fmt_money(total_spent, 'USD')}")
+
+    if st.button("Close", key=f"close_vendor_{vendor_id}"):
+        st.session_state.pop("dialog_vendor_id", None)
+        st.rerun()
+
+
+# =========================================================
+# VENDOR ENGAGEMENT DIALOG
+# =========================================================
+
+
+def _clear_dialog_engagement_id():
+    st.session_state.pop("dialog_engagement_id", None)
+
+
+@st.dialog(
+    "🤝 Vendor Engagement",
+    width="large",
+    on_dismiss=_clear_dialog_engagement_id,
+)
+def _render_engagement_detail_dialog(engagement_id):
+    eng = db.get_vendor_engagement(engagement_id)
+    if not eng:
+        st.warning("Engagement not found.")
+        return
+
+    st.subheader(f"🤝 {eng['vendor_name']}")
+    st.caption(
+        f"Status: {_vendor_status_label(eng.get('status'))}  ·  "
+        f"Contract: {_contract_status_label(eng.get('contract_status'))}"
+    )
+
+    # Edit engagement
+    with st.expander("✏️ Edit Engagement", expanded=False):
+        with st.form(key=f"eng_edit_{engagement_id}"):
+            col1, col2 = st.columns(2)
+            with col1:
+                status = st.selectbox(
+                    "Status",
+                    options=VENDOR_ENGAGEMENT_STATUSES,
+                    index=(
+                        VENDOR_ENGAGEMENT_STATUSES.index(eng["status"])
+                        if eng.get("status") in VENDOR_ENGAGEMENT_STATUSES
+                        else 0
+                    ),
+                    format_func=_vendor_status_label,
+                    key=f"eng_status_{engagement_id}",
+                )
+                quote_amount = st.number_input(
+                    "Quote Amount", min_value=0.0, step=50.0,
+                    value=float(eng.get("quote_amount") or 0),
+                    key=f"eng_quote_{engagement_id}",
+                )
+                agreed_amount = st.number_input(
+                    "Agreed Amount", min_value=0.0, step=50.0,
+                    value=float(eng.get("agreed_amount") or 0),
+                    key=f"eng_agreed_{engagement_id}",
+                )
+            with col2:
+                currency = st.text_input(
+                    "Currency", value=eng.get("currency") or "USD",
+                    key=f"eng_cur_{engagement_id}",
+                )
+                contract_status = st.selectbox(
+                    "Contract Status",
+                    options=CONTRACT_STATUSES,
+                    index=(
+                        CONTRACT_STATUSES.index(eng["contract_status"])
+                        if eng.get("contract_status") in CONTRACT_STATUSES
+                        else 0
+                    ),
+                    format_func=_contract_status_label,
+                    key=f"eng_contract_status_{engagement_id}",
+                )
+                contract_url = st.text_input(
+                    "Contract URL",
+                    value=eng.get("contract_url") or "",
+                    key=f"eng_contract_url_{engagement_id}",
+                )
+
+            payment_terms = st.text_input(
+                "Payment Terms",
+                value=eng.get("payment_terms") or "",
+                key=f"eng_terms_{engagement_id}",
+            )
+            notes = st.text_area(
+                "Notes", value=eng.get("notes") or "", height=80,
+                key=f"eng_notes_{engagement_id}",
+            )
+
+            if st.form_submit_button("💾 Save"):
+                db.update_vendor_engagement(
+                    engagement_id,
+                    status=status,
+                    quote_amount=quote_amount or None,
+                    agreed_amount=agreed_amount or None,
+                    currency=currency,
+                    contract_status=contract_status,
+                    contract_url=contract_url or None,
+                    payment_terms=payment_terms or None,
+                    notes=notes or None,
+                )
+                # If confirmed, sync to budget
+                if status == "confirmed" and agreed_amount > 0:
+                    db.recompute_budget_after_engagement_change(
+                        engagement_id
+                    )
+                st.success("✅ Engagement updated.")
+                st.rerun()
+
+    st.divider()
+
+    # Payments section
+    st.markdown("**💳 Payments**")
+    payments = db.get_vendor_payments(engagement_id)
+    if payments:
+        for p in payments:
+            col1, col2, col3, col4 = st.columns([3, 2, 2, 0.5])
+            with col1:
+                status_icon = "✅" if p.get("paid_date") else "⏳"
+                st.markdown(
+                    f"{status_icon} **{fmt_money(p.get('amount') or 0, p.get('currency') or 'USD')}**"
+                )
+                if p.get("method"):
+                    st.caption(_payment_method_label(p.get("method")))
+            with col2:
+                st.caption(f"Due: {p.get('due_date') or '—'}")
+            with col3:
+                st.caption(f"Paid: {p.get('paid_date') or '—'}")
+            with col4:
+                if st.button("🗑️", key=f"pay_del_{p['id']}"):
+                    db.delete_vendor_payment(p["id"])
+                    st.rerun()
+    else:
+        st.caption("No payments recorded.")
+
+    with st.expander("➕ Add Payment", expanded=False):
+        with st.form(key=f"add_pay_{engagement_id}"):
+            col1, col2 = st.columns(2)
+            with col1:
+                amount = st.number_input(
+                    "Amount", min_value=0.0, step=50.0, value=0.0,
+                    key=f"pay_amount_{engagement_id}",
+                )
+                currency = st.text_input(
+                    "Currency", value=eng.get("currency") or "USD",
+                    key=f"pay_currency_{engagement_id}",
+                )
+                due_date_input = st.date_input(
+                    "Due Date", value=None,
+                    key=f"pay_due_{engagement_id}",
+                )
+            with col2:
+                paid_date_input = st.date_input(
+                    "Paid Date (leave blank if not yet paid)",
+                    value=None, key=f"pay_paid_{engagement_id}",
+                )
+                method = st.selectbox(
+                    "Method",
+                    options=[""] + PAYMENT_METHODS,
+                    format_func=lambda m: (
+                        "—" if m == "" else _payment_method_label(m)
+                    ),
+                    key=f"pay_method_{engagement_id}",
+                )
+                reference = st.text_input(
+                    "Reference (invoice #, etc.)",
+                    key=f"pay_ref_{engagement_id}",
+                )
+            notes = st.text_area(
+                "Notes", key=f"pay_notes_{engagement_id}", height=60
+            )
+            if st.form_submit_button("➕ Add Payment"):
+                if amount <= 0:
+                    st.error("Amount must be greater than zero.")
+                else:
+                    db.add_vendor_payment(
+                        vendor_engagement_id=engagement_id,
+                        amount=amount,
+                        currency=currency,
+                        due_date=(
+                            due_date_input.isoformat()
+                            if due_date_input else None
+                        ),
+                        paid_date=(
+                            paid_date_input.isoformat()
+                            if paid_date_input else None
+                        ),
+                        method=method or None,
+                        reference=reference or None,
+                        notes=notes or None,
+                    )
+                    st.success("✅ Payment added.")
+                    st.rerun()
+
+    # Summary
+    total_paid = sum(
+        float(p.get("amount") or 0)
+        for p in payments if p.get("paid_date")
+    )
+    total_due = sum(
+        float(p.get("amount") or 0)
+        for p in payments if not p.get("paid_date")
+    )
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.metric("Paid", fmt_money(total_paid, eng.get("currency") or "USD"))
+    with col_b:
+        st.metric("Due", fmt_money(total_due, eng.get("currency") or "USD"))
+
+    st.divider()
+
+    if st.button("Close", key=f"eng_close_{engagement_id}"):
+        st.session_state.pop("dialog_engagement_id", None)
+        st.rerun()
 
 def _render_meeting_detail_dialog(meeting_id):
     meeting = db.get_meeting(meeting_id)
@@ -6055,16 +6801,184 @@ with tab_speaking:
 
 
 # =========================================================
-# TAB: VENDORS (placeholder — built in Phase 5)
+# TAB: VENDORS
 # =========================================================
 
 with tab_vendors:
     st.header("🏢 Vendors")
-    st.info(
-        "The Vendors module is coming in **Phase 5**. "
-        "It will track a reusable vendor directory plus per-event engagements, "
-        "contracts, and payments."
+
+    col1, col2, col3 = st.columns([2, 2, 3])
+    with col1:
+        cat_filter = st.selectbox(
+            "Category",
+            ["All"] + VENDOR_CATEGORIES,
+            key="vendor_filter_cat",
+        )
+    with col2:
+        pref_filter = st.checkbox(
+            "Preferred only", key="vendor_filter_pref"
+        )
+    with col3:
+        search_q = st.text_input(
+            "Search", placeholder="Name, email, city...",
+            key="vendor_search",
+        )
+
+    col_new, _sp = st.columns([1.2, 5])
+    with col_new:
+        if st.button(
+            "➕ New Vendor", type="primary", key="vendor_new_btn"
+        ):
+            st.session_state["vendor_show_create"] = True
+
+    if st.session_state.get("vendor_show_create", False):
+        with st.expander("➕ New Vendor", expanded=True):
+            with st.form("vendor_create_form"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    v_name = st.text_input("Name*", key="new_v_name")
+                    v_cat = st.selectbox(
+                        "Category",
+                        options=[""] + VENDOR_CATEGORIES,
+                        key="new_v_cat",
+                    )
+                    v_email = st.text_input("Email", key="new_v_email")
+                    v_phone = st.text_input("Phone", key="new_v_phone")
+                with col2:
+                    v_website = st.text_input(
+                        "Website", key="new_v_website"
+                    )
+                    v_city = st.text_input("City", key="new_v_city")
+                    v_country = st.text_input(
+                        "Country", key="new_v_country"
+                    )
+                    v_rating = st.number_input(
+                        "Rating", min_value=0, max_value=5, step=1,
+                        value=0, key="new_v_rating",
+                    )
+                v_address = st.text_input("Address", key="new_v_addr")
+                v_notes = st.text_area(
+                    "Notes", key="new_v_notes", height=80
+                )
+                v_pref = st.checkbox("⭐ Preferred", key="new_v_pref")
+
+                col_sub, col_cancel = st.columns(2)
+                with col_sub:
+                    submitted = st.form_submit_button("💾 Create")
+                with col_cancel:
+                    cancelled = st.form_submit_button("❌ Cancel")
+
+                if cancelled:
+                    st.session_state["vendor_show_create"] = False
+                    st.rerun()
+
+                if submitted:
+                    if not v_name:
+                        st.error("Name is required.")
+                    else:
+                        dupes = db.find_duplicate_vendors(v_name)
+                        if dupes:
+                            st.warning(
+                                f"⚠️ A vendor named '{v_name}' already exists."
+                            )
+                            for d in dupes:
+                                st.caption(f"- {d['name']}")
+                            st.info(
+                                "Edit the existing vendor instead, or "
+                                "change the name."
+                            )
+                        else:
+                            db.add_vendor(
+                                name=v_name,
+                                category=v_cat or None,
+                                email=v_email or None,
+                                phone=v_phone or None,
+                                website=v_website or None,
+                                city=v_city or None,
+                                country=v_country or None,
+                                address=v_address or None,
+                                notes=v_notes or None,
+                                rating=(
+                                    int(v_rating) if v_rating else None
+                                ),
+                                preferred=1 if v_pref else 0,
+                            )
+                            st.session_state["vendor_show_create"] = False
+                            st.success("✅ Vendor created.")
+                            st.rerun()
+
+    st.divider()
+
+    vendors = db.get_vendors(
+        category=cat_filter if cat_filter != "All" else None,
+        preferred_only=pref_filter,
+        search=search_q or None,
     )
+
+    if not vendors:
+        st.info("No vendors match these filters.")
+    else:
+        st.write(f"**{len(vendors)} vendor(s)**")
+        for v in vendors:
+            col1, col2, col3 = st.columns([5, 1, 1])
+            with col1:
+                pref = "⭐ " if v.get("preferred") else ""
+                st.markdown(f"### {pref}{v['name']}")
+                info_bits = []
+                if v.get("category"):
+                    info_bits.append(v["category"])
+                if v.get("city") or v.get("country"):
+                    loc = ", ".join(
+                        x for x in [v.get("city"), v.get("country")] if x
+                    )
+                    info_bits.append(loc)
+                if v.get("rating"):
+                    info_bits.append("★" * int(v["rating"]))
+                if info_bits:
+                    st.caption(" · ".join(info_bits))
+                contact_bits = []
+                if v.get("email"):
+                    contact_bits.append(f"✉️ {v['email']}")
+                if v.get("phone"):
+                    contact_bits.append(f"📞 {v['phone']}")
+                if contact_bits:
+                    st.caption(" · ".join(contact_bits))
+            with col2:
+                if st.button(
+                    "📂 Open", key=f"vendor_open_{v['id']}",
+                    use_container_width=True,
+                ):
+                    st.session_state["dialog_vendor_id"] = v["id"]
+            with col3:
+                if st.button("🗑️", key=f"vendor_del_{v['id']}"):
+                    st.session_state[
+                        f"confirm_list_del_vendor_{v['id']}"
+                    ] = True
+
+            if st.session_state.get(
+                f"confirm_list_del_vendor_{v['id']}", False
+            ):
+                st.warning(f"⚠️ Delete '{v['name']}'?")
+                col_y, col_n = st.columns(2)
+                with col_y:
+                    if st.button(
+                        "Yes, Delete", key=f"vendor_list_yes_{v['id']}"
+                    ):
+                        db.delete_vendor(v["id"])
+                        st.session_state.pop(
+                            f"confirm_list_del_vendor_{v['id']}", None
+                        )
+                        st.rerun()
+                with col_n:
+                    if st.button(
+                        "Cancel", key=f"vendor_list_no_{v['id']}"
+                    ):
+                        st.session_state.pop(
+                            f"confirm_list_del_vendor_{v['id']}", None
+                        )
+                        st.rerun()
+
+            st.divider()
 
 # =========================================================
 # TAB: DASHBOARD
@@ -6316,6 +7230,104 @@ with tab_dashboard:
     st.divider()
     # ================================================
     # END EVENTS WIDGETS
+    # ================================================
+
+    # ================================================
+    # VENDOR & BUDGET WIDGETS
+    # ================================================
+    payments_due = db.get_payments_due(
+        start_date=today_iso, end_date=week_end_iso,
+    )
+    over_budget_events = db.get_events_over_budget(threshold=0.9)
+    unsigned_contracts = db.get_unsigned_contracts_within_days(days=7)
+
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.metric("💳 Payments Due (7d)", len(payments_due))
+    with col_b:
+        st.metric("💰 Events Over 90%", len(over_budget_events))
+    with col_c:
+        st.metric("✍️ Unsigned Contracts", len(unsigned_contracts))
+
+    with st.expander(
+        "💳 Payments Due (next 7 days)", expanded=bool(payments_due)
+    ):
+        if not payments_due:
+            st.caption("No payments due.")
+        else:
+            for p in payments_due:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.markdown(
+                        f"**{p['vendor_name']}** — "
+                        f"{fmt_money(p.get('amount') or 0, p.get('currency') or 'USD')}"
+                    )
+                    st.caption(
+                        f"📅 {fmt_date(p.get('due_date'))}  ·  "
+                        f"from *{p['event_name']}*"
+                    )
+                with col2:
+                    if st.button(
+                        "Open",
+                        key=f"dash_pay_open_{p['id']}",
+                    ):
+                        st.session_state["dialog_event_id"] = p["event_id"]
+                        st.rerun()
+
+    with st.expander(
+        "💰 Events Over 90% Budget",
+        expanded=bool(over_budget_events),
+    ):
+        if not over_budget_events:
+            st.caption("All events within budget.")
+        else:
+            for ev in over_budget_events:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.markdown(f"**{ev['name']}**")
+                    ratio = (
+                        ev["spent_actual"] / ev["budget_total"]
+                        if ev["budget_total"] else 0
+                    )
+                    st.caption(
+                        f"📅 {fmt_date(ev.get('event_date'))}  ·  "
+                        f"{ratio*100:.0f}% of "
+                        f"{fmt_money(ev['budget_total'], ev.get('currency') or 'USD')}"
+                    )
+                with col2:
+                    if st.button(
+                        "Open",
+                        key=f"dash_ob_open_{ev['id']}",
+                    ):
+                        st.session_state["dialog_event_id"] = ev["id"]
+                        st.rerun()
+
+    with st.expander(
+        "✍️ Unsigned Contracts (7 days)",
+        expanded=bool(unsigned_contracts),
+    ):
+        if not unsigned_contracts:
+            st.caption("No unsigned contracts coming up.")
+        else:
+            for c in unsigned_contracts:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.markdown(f"**{c['vendor_name']}**")
+                    st.caption(
+                        f"Event: {c['event_name']}  ·  "
+                        f"📅 {fmt_date(c.get('event_date'))}"
+                    )
+                with col2:
+                    if st.button(
+                        "Open",
+                        key=f"dash_uc_open_{c['id']}",
+                    ):
+                        st.session_state["dialog_event_id"] = c["event_id"]
+                        st.rerun()
+
+    st.divider()
+    # ================================================
+    # END VENDOR & BUDGET WIDGETS
     # ================================================
 
     # ---- Load everything once ----
