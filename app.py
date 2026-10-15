@@ -1243,6 +1243,77 @@ def _cfp_status_label(s):
     return SPEAKING_CFP_STATUS_LABELS.get(s, s or "—")
 
 # =========================================================
+# CROSS-LINK HELPERS
+# =========================================================
+
+
+def _suggest_trip_for_date(target_date, exec_id, city_hint=None):
+    """
+    Return a list of candidate trips whose date range covers target_date,
+    for the given executive. If city_hint is provided, trips whose
+    destination or any stop city matches are prioritized.
+    """
+    if not target_date:
+        return []
+    target_iso = (
+        target_date.isoformat()
+        if hasattr(target_date, "isoformat")
+        else str(target_date)
+    )
+    candidates = db.get_trips_overlapping_dates(
+        target_iso, target_iso, exec_id=exec_id
+    )
+    if not candidates:
+        return []
+
+    if not city_hint:
+        return candidates
+
+    # Score candidates: any stop city matching the hint = 0 (best)
+    hint = city_hint.strip().lower()
+    scored = []
+    for t in candidates:
+        stops = db.get_trip_stops(t["id"])
+        matches = any(
+            hint in (s.get("city") or "").lower()
+            for s in stops
+        )
+        scored.append((0 if matches else 1, t))
+    scored.sort(key=lambda x: x[0])
+    return [t for _, t in scored]
+
+
+def _trip_dropdown_options(exec_id, current_trip_id=None):
+    """
+    Return {label: id} for the trip picker on edit forms.
+    Format: "— No trip —" then "purpose (start → end)".
+    """
+    options = {"— No trip —": None}
+    if not exec_id:
+        return options
+    conn = sqlite3.connect(db.DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT id, purpose, destination, start_date, end_date
+               FROM trips
+               WHERE exec_id = ?
+               ORDER BY start_date DESC
+               LIMIT 50""",
+            (exec_id,),
+        )
+        for r in c.fetchall():
+            label = (
+                f"{r['purpose'] or r['destination'] or 'Trip'}"
+                f" ({r['start_date']} → {r['end_date']})"
+            )
+            options[label] = r["id"]
+    finally:
+        conn.close()
+    return options
+
+# =========================================================
 # PAGE CONFIG
 # =========================================================
 
@@ -3455,6 +3526,91 @@ def _render_trip_edit_modal(trip_id_modal, country_list):
                             st.success("✅ Item added.")
                             st.rerun()
 
+
+    # ---- Linked Activities ----
+    st.write("**🔗 Linked Activities**")
+
+    linked_meetings = db.get_meetings_for_trip(trip_id_modal)
+    linked_events = db.get_events_for_trip(trip_id_modal)
+    linked_speaking = db.get_speaking_for_trip(trip_id_modal)
+
+    total_linked = (
+        len(linked_meetings) + len(linked_events) + len(linked_speaking)
+    )
+
+    if total_linked == 0:
+        st.caption(
+            "No meetings, events, or speaking engagements linked to "
+            "this trip yet. Use the 🔗 Linked Trip field on any record "
+            "to link it here."
+        )
+    else:
+        if linked_meetings:
+            st.markdown(f"**📅 Meetings ({len(linked_meetings)})**")
+            for m in linked_meetings:
+                col1, col2 = st.columns([5, 1])
+                with col1:
+                    st.markdown(f"• {m['title']}")
+                    st.caption(
+                        f"📅 {fmt_date(m.get('meeting_date'))}"
+                        + (
+                            f"  ·  🕐 {m['meeting_time']}"
+                            if m.get("meeting_time") else ""
+                        )
+                        + f"  ·  {_meeting_status_label(m.get('status'))}"
+                    )
+                with col2:
+                    if st.button(
+                        "Open",
+                        key=f"trip_link_mtg_{trip_id_modal}_{m['id']}",
+                    ):
+                        st.session_state["dialog_meeting_id"] = m["id"]
+                        st.rerun()
+
+        if linked_events:
+            st.markdown(f"**🎉 Events ({len(linked_events)})**")
+            for ev in linked_events:
+                col1, col2 = st.columns([5, 1])
+                with col1:
+                    st.markdown(f"• {ev['name']}")
+                    st.caption(
+                        f"📅 {fmt_date(ev.get('event_date'))}"
+                        + (
+                            f"  ·  🕐 {ev['start_time']}"
+                            if ev.get("start_time") else ""
+                        )
+                        + f"  ·  {_event_status_label(ev.get('status'))}"
+                    )
+                with col2:
+                    if st.button(
+                        "Open",
+                        key=f"trip_link_ev_{trip_id_modal}_{ev['id']}",
+                    ):
+                        st.session_state["dialog_event_id"] = ev["id"]
+                        st.rerun()
+
+        if linked_speaking:
+            st.markdown(
+                f"**🎤 Speaking Engagements ({len(linked_speaking)})**"
+            )
+            for eng in linked_speaking:
+                col1, col2 = st.columns([5, 1])
+                with col1:
+                    st.markdown(f"• {eng['title']}")
+                    st.caption(
+                        f"📅 {fmt_date(eng.get('engagement_date'))}"
+                        + f"  ·  {_speaking_status_label(eng.get('status'))}"
+                    )
+                with col2:
+                    if st.button(
+                        "Open",
+                        key=f"trip_link_sp_{trip_id_modal}_{eng['id']}",
+                    ):
+                        st.session_state["dialog_speaking_id"] = eng["id"]
+                        st.rerun()
+
+    st.divider()
+
     # ---- Emergency Info ----
     st.write("**🚨 Emergency Info**")
 
@@ -4492,6 +4648,25 @@ def _render_event_detail_dialog(event_id):
                 height=100, key=f"ev_edit_notes_{event_id}",
             )
 
+            # Linked Trip picker
+            trip_options = _trip_dropdown_options(exec_id)
+            trip_option_keys = list(trip_options.keys())
+            current_trip_label = "— No trip —"
+            for lbl, tid in trip_options.items():
+                if tid == event.get("linked_trip_id"):
+                    current_trip_label = lbl
+                    break
+            edit_linked_trip_label = st.selectbox(
+                "🔗 Linked Trip",
+                options=trip_option_keys,
+                index=(
+                    trip_option_keys.index(current_trip_label)
+                    if current_trip_label in trip_option_keys else 0
+                ),
+                key=f"ev_edit_linked_trip_{event_id}",
+            )
+            edit_linked_trip_id = trip_options[edit_linked_trip_label]
+
             col_save, col_cancel = st.columns(2)
             with col_save:
                 save_clicked = st.form_submit_button("💾 Save")
@@ -4526,7 +4701,9 @@ def _render_event_detail_dialog(event_id):
                         run_of_show_url=edit_run_url or None,
                         logistics_url=edit_logistics_url or None,
                         notes_native=edit_notes or None,
+                        linked_trip_id=edit_linked_trip_id,
                     )
+                    
                     st.success("✅ Event updated.")
                     st.rerun()
 
@@ -6024,6 +6201,7 @@ def _render_speaking_detail_dialog(engagement_id):
                         calendar_event_url=edit_cal_url or None,
                         notes_url=edit_notes_url or None,
                         notes_native=edit_notes_native or None,
+                        linked_trip_id=edit_linked_trip_id,
                     )
                     st.success("✅ Engagement updated.")
                     st.rerun()
@@ -6581,6 +6759,25 @@ def _render_meeting_detail_dialog(meeting_id):
                 key=f"mtg_edit_followup_{meeting_id}",
             )
 
+            # Linked Trip picker
+            trip_options = _trip_dropdown_options(exec_id)
+            trip_option_keys = list(trip_options.keys())
+            current_trip_label = "— No trip —"
+            for lbl, tid in trip_options.items():
+                if tid == meeting.get("linked_trip_id"):
+                    current_trip_label = lbl
+                    break
+            edit_linked_trip_label = st.selectbox(
+                "🔗 Linked Trip",
+                options=trip_option_keys,
+                index=(
+                    trip_option_keys.index(current_trip_label)
+                    if current_trip_label in trip_option_keys else 0
+                ),
+                key=f"mtg_edit_linked_trip_{meeting_id}",
+            )
+            edit_linked_trip_id = trip_options[edit_linked_trip_label]
+
             col_save, col_cancel = st.columns(2)
             with col_save:
                 save_clicked = st.form_submit_button("💾 Save")
@@ -6617,6 +6814,7 @@ def _render_meeting_detail_dialog(meeting_id):
                         follow_up_date=(
                             edit_followup.isoformat() if edit_followup else None
                         ),
+                        linked_trip_id=edit_linked_trip_id,
                     )
 
                     # Auto-log attendance if the meeting just completed
@@ -8077,6 +8275,129 @@ with tab_vendors:
 
 with tab_dashboard:
     st.header("🏠 Dashboard")
+
+    # ================================================
+    # UNIFIED TIMELINE (next 14 days)
+    # ================================================
+    timeline_start = datetime.now().date()
+    timeline_end = timeline_start + timedelta(days=14)
+    timeline_items = db.get_upcoming_activities(
+        timeline_start.isoformat(),
+        timeline_end.isoformat(),
+    )
+    timeline_trips = db.get_upcoming_trips(
+        timeline_start.isoformat(),
+        timeline_end.isoformat(),
+    )
+
+    # Merge and group by date
+    all_timeline = timeline_items + timeline_trips
+    all_timeline.sort(
+        key=lambda x: (
+            x.get("date") or "9999-12-31",
+            x.get("time") or "99:99",
+        )
+    )
+
+    with st.expander(
+        f"📆 What's On (next 14 days) — {len(all_timeline)} item(s)",
+        expanded=bool(all_timeline),
+    ):
+        if not all_timeline:
+            st.caption("Nothing scheduled in the next two weeks.")
+        else:
+            # Group by date
+            by_date = {}
+            for item in all_timeline:
+                d = item.get("date") or "Unknown"
+                by_date.setdefault(d, []).append(item)
+
+            for d, items in by_date.items():
+                try:
+                    nice_date = datetime.fromisoformat(d).strftime(
+                        "%A, %d %b %Y"
+                    )
+                except Exception:
+                    nice_date = d
+                st.markdown(f"**{nice_date}**")
+                for item in items:
+                    kind = item.get("kind")
+                    kind_icon = {
+                        "meeting": "📅",
+                        "event": "🎉",
+                        "speaking": "🎤",
+                        "trip": "✈️",
+                    }.get(kind, "•")
+                    time_str = item.get("time") or ""
+                    time_part = f"  ·  {time_str}" if time_str else ""
+                    exec_name = item.get("executive_name") or "—"
+                    st.markdown(
+                        f"{kind_icon}  {item.get('title') or '—'}"
+                        f"{time_part}"
+                    )
+                    extra = item.get("extra") or ""
+                    caption_bits = [f"👤 {exec_name}"]
+                    if extra:
+                        caption_bits.append(f"📍 {extra}")
+                    if kind == "trip" and item.get("status"):
+                        caption_bits.append(item["status"])
+                    st.caption("  ·  ".join(caption_bits))
+                st.divider()
+
+    st.divider()
+    # ================================================
+    # END UNIFIED TIMELINE
+    # ================================================
+
+    # ================================================
+    # GLOBAL SEARCH
+    # ================================================
+    search_q = st.text_input(
+        "🔍 Search everything (meetings, events, engagements, trips, "
+        "contacts, vendors)",
+        key="global_search_q",
+        placeholder="Type a keyword and press Enter",
+    )
+    if search_q:
+        results = db.global_search(search_q, limit_per_kind=8)
+        total = sum(len(v) for v in results.values())
+        if total == 0:
+            st.caption("No matches.")
+        else:
+            st.caption(f"**{total}** result(s)")
+            cols = st.columns(3)
+            col_map = {
+                "meetings": (cols[0], "📅 Meetings", "dialog_meeting_id"),
+                "events": (cols[0], "🎉 Events", "dialog_event_id"),
+                "speaking": (cols[1], "🎤 Speaking", "dialog_speaking_id"),
+                "trips": (cols[1], "✈️ Trips", None),
+                "contacts": (cols[2], "👥 Contacts", "dialog_comm_contact_id"),
+                "vendors": (cols[2], "🏢 Vendors", "dialog_vendor_id"),
+            }
+            for kind, (col, label, dialog_key) in col_map.items():
+                rows = results.get(kind) or []
+                if not rows:
+                    continue
+                with col:
+                    st.markdown(f"**{label}** ({len(rows)})")
+                    for r in rows:
+                        if st.button(
+                            f"{r['title'] or '—'}",
+                            key=f"gs_{kind}_{r['id']}",
+                            use_container_width=True,
+                        ):
+                            if dialog_key:
+                                st.session_state[dialog_key] = r["id"]
+                                st.rerun()
+                            elif kind == "trips":
+                                # Open trip edit modal
+                                st.session_state["dialog_trip_id"] = r["id"]
+                                st.rerun()
+
+    st.divider()
+    # ================================================
+    # END GLOBAL SEARCH
+    # ================================================
 
     # ================================================
     # MEETINGS WIDGETS

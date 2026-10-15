@@ -6924,3 +6924,289 @@ def get_thank_yous_overdue(days_since_delivery=7):
         return [dict(r) for r in c.fetchall()]
     finally:
         conn.close()
+
+# =========================================================
+# CROSS-MODULE QUERIES
+# =========================================================
+
+
+def get_meetings_for_trip(trip_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT m.*, e.name AS executive_name
+               FROM meetings m
+               LEFT JOIN executives e ON m.exec_id = e.id
+               WHERE m.linked_trip_id = ?
+               ORDER BY m.meeting_date ASC, m.meeting_time ASC""",
+            (trip_id,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_events_for_trip(trip_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT ev.*, e.name AS executive_name
+               FROM events ev
+               LEFT JOIN executives e ON ev.exec_id = e.id
+               WHERE ev.linked_trip_id = ?
+               ORDER BY ev.event_date ASC, ev.start_time ASC""",
+            (trip_id,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_speaking_for_trip(trip_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT se.*, e.name AS executive_name
+               FROM speaking_engagements se
+               LEFT JOIN executives e ON se.exec_id = e.id
+               WHERE se.linked_trip_id = ?
+               ORDER BY se.engagement_date ASC""",
+            (trip_id,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_trips_overlapping_dates(start_date, end_date, exec_id=None):
+    """
+    Return trips whose [start_date, end_date] overlaps the given window.
+    Used by auto-suggest in meeting/event/engagement forms.
+    """
+    if not start_date or not end_date:
+        return []
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        conditions = ["t.start_date <= ?", "t.end_date >= ?"]
+        params = [end_date, start_date]
+        if exec_id:
+            conditions.append("t.exec_id = ?")
+            params.append(exec_id)
+        q = """SELECT t.*, e.name AS executive_name
+               FROM trips t
+               LEFT JOIN executives e ON t.exec_id = e.id
+               WHERE """ + " AND ".join(conditions)
+        q += " ORDER BY t.start_date ASC"
+        c.execute(q, params)
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_upcoming_activities(start_date, end_date, exec_id=None):
+    """
+    Return a unified list of activities (meetings, events, speaking
+    engagements) in the given date window. Each item has a common shape:
+      {kind, id, title, date, time, exec_id, executive_name, status, extra}
+    """
+    items = []
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+
+        # Meetings
+        q = """SELECT m.id, m.title, m.meeting_date AS date,
+                      m.meeting_time AS time, m.status,
+                      m.exec_id, e.name AS executive_name,
+                      m.location, m.linked_trip_id
+               FROM meetings m
+               LEFT JOIN executives e ON m.exec_id = e.id
+               WHERE m.meeting_date >= ? AND m.meeting_date <= ?"""
+        params = [start_date, end_date]
+        if exec_id:
+            q += " AND m.exec_id = ?"
+            params.append(exec_id)
+        c.execute(q, params)
+        for r in c.fetchall():
+            row = dict(r)
+            row["kind"] = "meeting"
+            row["extra"] = row.get("location") or ""
+            items.append(row)
+
+        # Events
+        q = """SELECT ev.id, ev.name AS title, ev.event_date AS date,
+                      ev.start_time AS time, ev.status,
+                      ev.exec_id, e.name AS executive_name,
+                      ev.linked_trip_id
+               FROM events ev
+               LEFT JOIN executives e ON ev.exec_id = e.id
+               WHERE ev.event_date >= ? AND ev.event_date <= ?"""
+        params = [start_date, end_date]
+        if exec_id:
+            q += " AND ev.exec_id = ?"
+            params.append(exec_id)
+        c.execute(q, params)
+        for r in c.fetchall():
+            row = dict(r)
+            row["kind"] = "event"
+            row["extra"] = ""
+            items.append(row)
+
+        # Speaking engagements
+        q = """SELECT se.id, se.title, se.engagement_date AS date,
+                      se.engagement_time AS time, se.status,
+                      se.exec_id, e.name AS executive_name,
+                      se.location, se.linked_trip_id
+               FROM speaking_engagements se
+               LEFT JOIN executives e ON se.exec_id = e.id
+               WHERE se.engagement_date >= ?
+                 AND se.engagement_date <= ?"""
+        params = [start_date, end_date]
+        if exec_id:
+            q += " AND se.exec_id = ?"
+            params.append(exec_id)
+        c.execute(q, params)
+        for r in c.fetchall():
+            row = dict(r)
+            row["kind"] = "speaking"
+            row["extra"] = row.get("location") or ""
+            items.append(row)
+    finally:
+        conn.close()
+
+    # Sort by date, then time
+    def _sort_key(it):
+        return (
+            it.get("date") or "9999-12-31",
+            it.get("time") or "99:99",
+        )
+    items.sort(key=_sort_key)
+    return items
+
+
+def get_upcoming_trips(start_date, end_date, exec_id=None):
+    """Return trips starting in the given window, shaped like activities."""
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        q = """SELECT t.id, t.purpose AS title, t.start_date AS date,
+                      t.destination, t.exec_id,
+                      e.name AS executive_name, t.status
+               FROM trips t
+               LEFT JOIN executives e ON t.exec_id = e.id
+               WHERE t.start_date >= ? AND t.start_date <= ?"""
+        params = [start_date, end_date]
+        if exec_id:
+            q += " AND t.exec_id = ?"
+            params.append(exec_id)
+        q += " ORDER BY t.start_date ASC"
+        c.execute(q, params)
+        items = []
+        for r in c.fetchall():
+            row = dict(r)
+            row["kind"] = "trip"
+            row["time"] = None
+            row["extra"] = row.get("destination") or ""
+            items.append(row)
+        return items
+    finally:
+        conn.close()
+
+
+def global_search(query, limit_per_kind=10):
+    """
+    Search across meetings, events, speaking engagements, trips, contacts,
+    and vendors. Returns dict of kind -> list of results.
+    """
+    if not query or not query.strip():
+        return {}
+    like = f"%{query.lower()}%"
+    results = {}
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+
+        c.execute(
+            """SELECT id, title, meeting_date AS date, status
+               FROM meetings
+               WHERE LOWER(title) LIKE ?
+                  OR LOWER(COALESCE(agenda,'')) LIKE ?
+                  OR LOWER(COALESCE(notes_native,'')) LIKE ?
+               ORDER BY meeting_date DESC
+               LIMIT ?""",
+            (like, like, like, limit_per_kind),
+        )
+        results["meetings"] = [dict(r) for r in c.fetchall()]
+
+        c.execute(
+            """SELECT id, name AS title, event_date AS date, status
+               FROM events
+               WHERE LOWER(name) LIKE ?
+                  OR LOWER(COALESCE(objective,'')) LIKE ?
+                  OR LOWER(COALESCE(notes_native,'')) LIKE ?
+               ORDER BY event_date DESC
+               LIMIT ?""",
+            (like, like, like, limit_per_kind),
+        )
+        results["events"] = [dict(r) for r in c.fetchall()]
+
+        c.execute(
+            """SELECT id, title, engagement_date AS date, status
+               FROM speaking_engagements
+               WHERE LOWER(title) LIKE ?
+                  OR LOWER(COALESCE(topic,'')) LIKE ?
+                  OR LOWER(COALESCE(organizer_name,'')) LIKE ?
+               ORDER BY engagement_date DESC
+               LIMIT ?""",
+            (like, like, like, limit_per_kind),
+        )
+        results["speaking"] = [dict(r) for r in c.fetchall()]
+
+        c.execute(
+            """SELECT id, purpose AS title, start_date AS date, status
+               FROM trips
+               WHERE LOWER(purpose) LIKE ?
+                  OR LOWER(destination) LIKE ?
+               ORDER BY start_date DESC
+               LIMIT ?""",
+            (like, like, limit_per_kind),
+        )
+        results["trips"] = [dict(r) for r in c.fetchall()]
+
+        c.execute(
+            """SELECT id, name AS title, email, role, company_id
+               FROM contacts
+               WHERE LOWER(name) LIKE ?
+                  OR LOWER(COALESCE(email,'')) LIKE ?
+                  OR LOWER(COALESCE(role,'')) LIKE ?
+               ORDER BY name
+               LIMIT ?""",
+            (like, like, like, limit_per_kind),
+        )
+        results["contacts"] = [dict(r) for r in c.fetchall()]
+
+        c.execute(
+            """SELECT id, name AS title, category, email
+               FROM vendors
+               WHERE LOWER(name) LIKE ?
+                  OR LOWER(COALESCE(category,'')) LIKE ?
+                  OR LOWER(COALESCE(email,'')) LIKE ?
+               ORDER BY name
+               LIMIT ?""",
+            (like, like, like, limit_per_kind),
+        )
+        results["vendors"] = [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+    return results
