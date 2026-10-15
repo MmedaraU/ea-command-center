@@ -7736,12 +7736,9 @@ tab_names = [
     "📅 Meetings",
     "🎉 Events",
     "🎤 Speaking",
-    "✈️ Trip Planner",
-    "✈️ All Trips",
+    "✈️ Trips",
     "👥 Contacts",
-    "🏢 Companies",
-    "🏢 Venues",
-    "🏢 Vendors",
+    "🗂️ Directory",
     "📚 Library",
 ]
 (
@@ -7749,14 +7746,17 @@ tab_names = [
     tab_meetings,
     tab_events,
     tab_speaking,
-    tab_trip_planner,
-    tab_all_trips,
+    tab_trips,
     tab_contacts,
-    tab_companies,
-    tab_venues,
-    tab_vendors,
+    tab_directory,
     tab_library,
 ) = st.tabs(tab_names)
+
+# Sub-tabs for merged tabs — created here, populated later
+with tab_trips:
+    _trip_subtabs = st.tabs(["📋 All Trips", "➕ New Trip"])
+with tab_directory:
+    _dir_subtabs = st.tabs(["🏢 Companies", "🏢 Venues", "🏢 Vendors"])
 
 
 # =========================================================
@@ -8722,7 +8722,7 @@ with tab_speaking:
 # TAB: VENDORS
 # =========================================================
 
-with tab_vendors:
+with _dir_subtabs[2]:
     st.header("🏢 Vendors")
 
     col1, col2, col3 = st.columns([2, 2, 3])
@@ -9034,9 +9034,7 @@ with tab_dashboard:
         try:
             execs_for_tt_filter = db.get_all_executives(active_only=True)
             tt_exec_options = {"All executives": None}
-            tt_exec_options.update(
-                {e["name"]: e["id"] for e in execs_for_tt_filter}
-            )
+            tt_exec_options.update({e["name"]: e["id"] for e in execs_for_tt_filter})
             tt_exec_label = st.selectbox(
                 "TickTick — filter by executive",
                 options=list(tt_exec_options.keys()),
@@ -9048,13 +9046,14 @@ with tab_dashboard:
                 exec_id=tt_exec_id_filter, open_only=True
             )
             ticktick_due_soon = [
-                t for t in db.get_ticktick_tasks_due_soon(days=7)
+                t
+                for t in db.get_ticktick_tasks_due_soon(days=7)
                 if tt_exec_id_filter is None
-                or db.resolve_ticktick_task_executive(t)[0]
-                    == tt_exec_id_filter
+                or db.resolve_ticktick_task_executive(t)[0] == tt_exec_id_filter
             ]
             ticktick_overdue = [
-                t for t in ticktick_tasks_all
+                t
+                for t in ticktick_tasks_all
                 if t.get("due_date") and t["due_date"] < today_iso
             ]
         except Exception as e:
@@ -9088,9 +9087,7 @@ with tab_dashboard:
                             st.markdown(f"**{t.get('title') or '—'}**")
                             caption_bits = [f"Due: {t.get('due_date')}"]
                             if exec_name_resolved:
-                                caption_bits.append(
-                                    f"👤 {exec_name_resolved}"
-                                )
+                                caption_bits.append(f"👤 {exec_name_resolved}")
                                 if tag_used:
                                     caption_bits.append(f"`{tag_used}`")
                             st.caption("  ·  ".join(caption_bits))
@@ -9100,9 +9097,7 @@ with tab_dashboard:
                                 key=f"tt_complete_{t['ticktick_id']}",
                                 help="Mark complete in TickTick",
                             ):
-                                err = ticktick_sync.complete_task(
-                                    t["ticktick_id"]
-                                )
+                                err = ticktick_sync.complete_task(t["ticktick_id"])
                                 if err:
                                     st.error(err)
                                 else:
@@ -9120,9 +9115,7 @@ with tab_dashboard:
                             st.markdown(f"**{t.get('title') or '—'}**")
                             caption_bits = [f"Due: {t.get('due_date')}"]
                             if exec_name_resolved:
-                                caption_bits.append(
-                                    f"👤 {exec_name_resolved}"
-                                )
+                                caption_bits.append(f"👤 {exec_name_resolved}")
                                 if tag_used:
                                     caption_bits.append(f"`{tag_used}`")
                             st.caption("  ·  ".join(caption_bits))
@@ -9131,9 +9124,7 @@ with tab_dashboard:
                                 "✓",
                                 key=f"tt_complete_week_{t['ticktick_id']}",
                             ):
-                                err = ticktick_sync.complete_task(
-                                    t["ticktick_id"]
-                                )
+                                err = ticktick_sync.complete_task(t["ticktick_id"])
                                 if err:
                                     st.error(err)
                                 else:
@@ -9939,7 +9930,7 @@ with tab_dashboard:
 # TAB: TRIP PLANNER
 # =========================================================
 
-with tab_trip_planner:
+with _trip_subtabs[1]:
     if not profile:
         st.info("👤 **Add an executive in the sidebar** to start planning a trip. "
                 "The other tabs (Companies, Contacts, Venues, Library) work without one.")
@@ -11260,7 +11251,7 @@ with tab_trip_planner:
 # TAB: ALL TRIPS
 # =========================================================
 
-with tab_all_trips:
+with _trip_subtabs[0]:
     col_title, col_from_tpl = st.columns([5, 1.4], vertical_alignment="bottom")
     with col_from_tpl:
         if st.button(
@@ -11590,7 +11581,7 @@ with tab_all_trips:
 # TAB: COMPANIES
 # =========================================================
 
-with tab_companies:
+with _dir_subtabs[0]:
     with st.expander("➕ Add New Company", expanded=False):
         with st.form("add_company_manager_form"):
             new_name = st.text_input("Company Name*", key="mgr_comp_name")
@@ -12424,7 +12415,7 @@ with tab_contacts:
 # TAB: VENUES
 # =========================================================
 
-with tab_venues:
+with _dir_subtabs[1]:
     st.caption(
         "Manage reusable venues. Each venue can be attached to specific "
         "itinerary items."
@@ -13992,7 +13983,7 @@ if st.session_state.get("dialog_rsvp_import_event_id"):
     _render_rsvp_import_dialog(
         st.session_state["dialog_rsvp_import_event_id"]
     )
-    
+
 
 if st.session_state.get("dialog_speaking_id"):
     _render_speaking_detail_dialog(
