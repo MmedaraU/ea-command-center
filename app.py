@@ -1034,6 +1034,58 @@ def _direction_label(d):
     return COMM_DIRECTION_LABELS.get(d, d or "—")
 
 # =========================================================
+# EVENT CONSTANTS
+# =========================================================
+
+EVENT_TYPES = [
+    "Dinner", "Offsite", "Conference", "Retreat", "Client Party",
+    "Board Meeting", "Reception", "Awards", "Launch", "Other",
+]
+
+EVENT_STATUSES = [
+    "planning", "confirmed", "in_progress", "day_of", "completed",
+    "cancelled",
+]
+
+EVENT_STATUS_LABELS = {
+    "planning": "📝 Planning",
+    "confirmed": "✅ Confirmed",
+    "in_progress": "🔄 In Progress",
+    "day_of": "🎯 Day Of",
+    "completed": "🏁 Completed",
+    "cancelled": "🚫 Cancelled",
+}
+
+GUEST_STATUSES = [
+    "not_invited", "invited", "pending", "accepted", "declined",
+    "waitlist", "cancelled", "checked_in",
+]
+
+GUEST_STATUS_LABELS = {
+    "not_invited": "— Not Invited",
+    "invited": "📤 Invited",
+    "pending": "⏳ Pending",
+    "accepted": "✅ Accepted",
+    "declined": "❌ Declined",
+    "waitlist": "⏸ Waitlist",
+    "cancelled": "🚫 Cancelled",
+    "checked_in": "🎯 Checked In",
+}
+
+GUEST_STATUS_ORDER = [
+    "accepted", "pending", "invited", "not_invited",
+    "declined", "waitlist", "cancelled", "checked_in",
+]
+
+
+def _event_status_label(s):
+    return EVENT_STATUS_LABELS.get(s, s or "—")
+
+
+def _guest_status_label(s):
+    return GUEST_STATUS_LABELS.get(s, s or "—")
+
+# =========================================================
 # PAGE CONFIG
 # =========================================================
 
@@ -4111,6 +4163,760 @@ def _render_communications_dialog(contact_id):
         st.session_state.pop("dialog_comm_contact_id", None)
         st.rerun()
 
+# =========================================================
+# EVENT DETAIL DIALOG
+# =========================================================
+
+
+def _clear_dialog_event_id():
+    st.session_state.pop("dialog_event_id", None)
+
+
+@st.dialog(
+    "🎉 Event",
+    width="large",
+    on_dismiss=_clear_dialog_event_id,
+)
+def _render_event_detail_dialog(event_id):
+    event = db.get_event(event_id)
+    if not event:
+        st.warning("Event not found.")
+        return
+
+    exec_id = event["exec_id"]
+    st.subheader(f"🎉 {event['name']}")
+    st.caption(
+        f"**{event.get('executive_name') or '—'}** · "
+        f"{_event_status_label(event.get('status'))}  ·  "
+        f"📅 {fmt_date(event.get('event_date'))}"
+    )
+
+    # ================================================
+    # SECTION: Edit Event
+    # ================================================
+    with st.expander("✏️ Edit Event", expanded=False):
+        with st.form(key=f"ev_edit_form_{event_id}"):
+            col1, col2 = st.columns(2)
+            with col1:
+                edit_name = st.text_input(
+                    "Name*", value=event.get("name") or "",
+                    key=f"ev_edit_name_{event_id}",
+                )
+                edit_type = st.selectbox(
+                    "Type",
+                    options=[""] + EVENT_TYPES,
+                    index=(
+                        ([""] + EVENT_TYPES).index(event["event_type"])
+                        if event.get("event_type") in EVENT_TYPES
+                        else 0
+                    ),
+                    key=f"ev_edit_type_{event_id}",
+                )
+                edit_status = st.selectbox(
+                    "Status",
+                    options=EVENT_STATUSES,
+                    index=(
+                        EVENT_STATUSES.index(event["status"])
+                        if event.get("status") in EVENT_STATUSES
+                        else 0
+                    ),
+                    format_func=_event_status_label,
+                    key=f"ev_edit_status_{event_id}",
+                )
+            with col2:
+                try:
+                    default_date = (
+                        datetime.fromisoformat(event["event_date"]).date()
+                        if event.get("event_date")
+                        else datetime.now().date()
+                    )
+                except Exception:
+                    default_date = datetime.now().date()
+                edit_date = st.date_input(
+                    "Date", value=default_date,
+                    key=f"ev_edit_date_{event_id}",
+                )
+                edit_start = st.text_input(
+                    "Start Time (e.g. 19:00)",
+                    value=event.get("start_time") or "",
+                    key=f"ev_edit_start_{event_id}",
+                )
+                edit_end = st.text_input(
+                    "End Time (e.g. 22:00)",
+                    value=event.get("end_time") or "",
+                    key=f"ev_edit_end_{event_id}",
+                )
+
+            edit_objective = st.text_area(
+                "Objective", value=event.get("objective") or "",
+                height=80, key=f"ev_edit_obj_{event_id}",
+            )
+
+            col_a, col_b = st.columns(2)
+            with col_a:
+                edit_headcount = st.number_input(
+                    "Expected Headcount", min_value=0, step=5,
+                    value=int(event.get("headcount") or 0),
+                    key=f"ev_edit_headcount_{event_id}",
+                )
+                edit_budget = st.number_input(
+                    "Budget Total", min_value=0.0, step=100.0,
+                    value=float(event.get("budget_total") or 0),
+                    key=f"ev_edit_budget_{event_id}",
+                )
+            with col_b:
+                currency_options = ["USD", "EUR", "GBP", "NGN", "ZAR", "KES"]
+                edit_currency = st.selectbox(
+                    "Currency",
+                    options=currency_options,
+                    index=(
+                        currency_options.index(event["currency"])
+                        if event.get("currency") in currency_options
+                        else 0
+                    ),
+                    key=f"ev_edit_currency_{event_id}",
+                )
+                edit_location = st.text_input(
+                    "Location Override (if no venue)",
+                    value=event.get("location_override") or "",
+                    key=f"ev_edit_loc_{event_id}",
+                )
+
+            # Venue picker
+            venue_options = db.get_venues(active_only=True)
+            venue_labels = {"—": None}
+            for v in venue_options:
+                label = v["name"]
+                if v.get("city"):
+                    label += f" — {v['city']}"
+                venue_labels[label] = v["id"]
+            current_venue_label = "—"
+            for lbl, vid in venue_labels.items():
+                if vid == event.get("venue_id"):
+                    current_venue_label = lbl
+                    break
+            edit_venue_label = st.selectbox(
+                "Venue",
+                options=list(venue_labels.keys()),
+                index=list(venue_labels.keys()).index(current_venue_label),
+                key=f"ev_edit_venue_{event_id}",
+            )
+            edit_venue_id = venue_labels[edit_venue_label]
+
+            st.markdown("**🔗 Links**")
+            edit_cal_url = st.text_input(
+                "Calendar Event URL",
+                value=event.get("calendar_event_url") or "",
+                key=f"ev_edit_cal_{event_id}",
+            )
+            edit_rsvp_url = st.text_input(
+                "Google Form RSVP URL",
+                value=event.get("rsvp_form_url") or "",
+                key=f"ev_edit_rsvp_{event_id}",
+                help="The Form that guests fill out to RSVP.",
+            )
+            col_x, col_y = st.columns(2)
+            with col_x:
+                edit_run_url = st.text_input(
+                    "Run of Show Doc URL",
+                    value=event.get("run_of_show_url") or "",
+                    key=f"ev_edit_run_{event_id}",
+                )
+            with col_y:
+                edit_logistics_url = st.text_input(
+                    "Logistics Doc URL",
+                    value=event.get("logistics_url") or "",
+                    key=f"ev_edit_log_url_{event_id}",
+                )
+
+            edit_notes = st.text_area(
+                "Quick Notes",
+                value=event.get("notes_native") or "",
+                height=100, key=f"ev_edit_notes_{event_id}",
+            )
+
+            col_save, col_cancel = st.columns(2)
+            with col_save:
+                save_clicked = st.form_submit_button("💾 Save")
+            with col_cancel:
+                cancel_clicked = st.form_submit_button("❌ Cancel")
+
+            if cancel_clicked:
+                st.rerun()
+
+            if save_clicked:
+                if not edit_name:
+                    st.error("Name is required.")
+                else:
+                    db.update_event(
+                        event_id,
+                        name=edit_name,
+                        event_type=edit_type or None,
+                        status=edit_status,
+                        event_date=(
+                            edit_date.isoformat() if edit_date else None
+                        ),
+                        start_time=edit_start or None,
+                        end_time=edit_end or None,
+                        objective=edit_objective or None,
+                        headcount=int(edit_headcount) or None,
+                        budget_total=edit_budget or 0,
+                        currency=edit_currency,
+                        venue_id=edit_venue_id,
+                        location_override=edit_location or None,
+                        calendar_event_url=edit_cal_url or None,
+                        rsvp_form_url=edit_rsvp_url or None,
+                        run_of_show_url=edit_run_url or None,
+                        logistics_url=edit_logistics_url or None,
+                        notes_native=edit_notes or None,
+                    )
+                    st.success("✅ Event updated.")
+                    st.rerun()
+
+    st.divider()
+
+    # ================================================
+    # SECTION: Guests
+    # ================================================
+    st.markdown("**👥 Guests**")
+    counts = db.get_event_guest_status_counts(event_id)
+    accepted = counts.get("accepted", 0)
+    pending = counts.get("pending", 0) + counts.get("invited", 0)
+    declined = counts.get("declined", 0)
+    waitlist = counts.get("waitlist", 0)
+    not_invited = counts.get("not_invited", 0)
+
+    col_a, col_b, col_c, col_d, col_e = st.columns(5)
+    with col_a:
+        st.metric("Accepted", accepted)
+    with col_b:
+        st.metric("Pending", pending)
+    with col_c:
+        st.metric("Declined", declined)
+    with col_d:
+        st.metric("Waitlist", waitlist)
+    with col_e:
+        st.metric("Not Invited", not_invited)
+
+    guests = db.get_event_guests(event_id)
+
+    if guests:
+        # Sort by status priority
+        def _guest_sort(g):
+            return (
+                GUEST_STATUS_ORDER.index(g.get("invite_status") or "pending")
+                if g.get("invite_status") in GUEST_STATUS_ORDER
+                else 99,
+                (g.get("guest_name") or g.get("contact_name") or "").lower(),
+            )
+        guests = sorted(guests, key=_guest_sort)
+
+        for g in guests:
+            display_name = (
+                g.get("guest_name")
+                or g.get("contact_name")
+                or "—"
+            )
+            col1, col2, col3, col4 = st.columns([3, 2, 2, 0.5])
+            with col1:
+                st.markdown(f"**{display_name}**")
+                email = g.get("guest_email") or g.get("contact_email")
+                if email:
+                    st.caption(email)
+                if g.get("plus_ones"):
+                    st.caption(f"+{g['plus_ones']} guest(s)")
+            with col2:
+                current_status = g.get("invite_status") or "pending"
+                new_status = st.selectbox(
+                    "Status",
+                    options=GUEST_STATUSES,
+                    index=(
+                        GUEST_STATUSES.index(current_status)
+                        if current_status in GUEST_STATUSES
+                        else 0
+                    ),
+                    format_func=_guest_status_label,
+                    key=f"ev_guest_status_{g['id']}",
+                    label_visibility="collapsed",
+                )
+                if new_status != current_status:
+                    db.update_event_guest(
+                        g["id"], invite_status=new_status
+                    )
+                    st.rerun()
+            with col3:
+                if g.get("dietary"):
+                    st.caption(f"🍽 {g['dietary']}")
+                if g.get("accessibility"):
+                    st.caption(f"♿ {g['accessibility']}")
+            with col4:
+                if st.button(
+                    "🗑️", key=f"ev_guest_del_{g['id']}"
+                ):
+                    db.delete_event_guest(g["id"])
+                    st.rerun()
+    else:
+        st.caption("No guests yet.")
+
+    with st.expander("➕ Add Guest", expanded=False):
+        with st.form(key=f"ev_add_guest_form_{event_id}"):
+            contacts = db.get_contacts(active_only=True)
+            source_options = ["Existing contact", "New guest"]
+            source = st.radio(
+                "Source", source_options, horizontal=True,
+                key=f"ev_guest_source_{event_id}",
+            )
+
+            contact_id_val = None
+            guest_name_val = None
+            guest_email_val = None
+
+            if source == "Existing contact":
+                if contacts:
+                    contact_options = {
+                        f"{c['name']} ({c.get('role') or '—'})": c["id"]
+                        for c in contacts
+                    }
+                    sel_label = st.selectbox(
+                        "Contact*",
+                        options=list(contact_options.keys()),
+                        key=f"ev_guest_contact_{event_id}",
+                    )
+                    contact_id_val = contact_options[sel_label]
+                else:
+                    st.info(
+                        "No contacts yet. Add one in the Contacts tab "
+                        "or switch to 'New guest'."
+                    )
+            else:
+                guest_name_val = st.text_input(
+                    "Guest Name*", key=f"ev_guest_name_{event_id}"
+                )
+                guest_email_val = st.text_input(
+                    "Guest Email", key=f"ev_guest_email_{event_id}"
+                )
+
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                initial_status = st.selectbox(
+                    "Status",
+                    options=GUEST_STATUSES,
+                    index=GUEST_STATUSES.index("invited"),
+                    format_func=_guest_status_label,
+                    key=f"ev_guest_init_status_{event_id}",
+                )
+            with col_b:
+                plus_ones = st.number_input(
+                    "Plus Ones", min_value=0, step=1, value=0,
+                    key=f"ev_guest_plus_{event_id}",
+                )
+            with col_c:
+                badge_name = st.text_input(
+                    "Badge Name", key=f"ev_guest_badge_{event_id}"
+                )
+
+            col_d, col_e = st.columns(2)
+            with col_d:
+                dietary = st.text_input(
+                    "Dietary", key=f"ev_guest_diet_{event_id}"
+                )
+                accessibility = st.text_input(
+                    "Accessibility",
+                    key=f"ev_guest_access_{event_id}",
+                )
+            with col_e:
+                allergy = st.text_input(
+                    "Allergies", key=f"ev_guest_allergy_{event_id}"
+                )
+                seating = st.text_input(
+                    "Seating Preference",
+                    key=f"ev_guest_seating_{event_id}",
+                )
+
+            if st.form_submit_button("➕ Add Guest"):
+                if source == "Existing contact":
+                    if not contact_id_val:
+                        st.error("Select a contact.")
+                    else:
+                        existing = [
+                            g["contact_id"] for g in guests
+                            if g.get("contact_id")
+                        ]
+                        if contact_id_val in existing:
+                            st.warning(
+                                "This contact is already a guest."
+                            )
+                        else:
+                            db.add_event_guest(
+                                event_id,
+                                contact_id=contact_id_val,
+                                invite_status=initial_status,
+                                plus_ones=int(plus_ones),
+                                badge_name=badge_name or None,
+                                dietary=dietary or None,
+                                accessibility=accessibility or None,
+                                allergy_details=allergy or None,
+                                seating_preference=seating or None,
+                            )
+                            st.rerun()
+                else:
+                    if not guest_name_val:
+                        st.error("Guest name is required.")
+                    else:
+                        db.add_event_guest(
+                            event_id,
+                            guest_name=guest_name_val,
+                            guest_email=guest_email_val or None,
+                            invite_status=initial_status,
+                            plus_ones=int(plus_ones),
+                            badge_name=badge_name or None,
+                            dietary=dietary or None,
+                            accessibility=accessibility or None,
+                            allergy_details=allergy or None,
+                            seating_preference=seating or None,
+                        )
+                        st.rerun()
+
+    st.divider()
+
+    # ================================================
+    # SECTION: Delete Event
+    # ================================================
+    if st.button(
+        "🗑️ Delete This Event", type="primary",
+        key=f"ev_del_btn_{event_id}",
+    ):
+        st.session_state[f"confirm_del_ev_{event_id}"] = True
+
+    if st.session_state.get(f"confirm_del_ev_{event_id}", False):
+        st.warning(f"⚠️ Permanently delete event '{event['name']}'?")
+        col_yes, col_no = st.columns(2)
+        with col_yes:
+            if st.button(
+                "✅ Yes, Delete", key=f"ev_del_yes_{event_id}"
+            ):
+                db.delete_event(event_id)
+                st.session_state.pop(f"confirm_del_ev_{event_id}", None)
+                st.session_state.pop("dialog_event_id", None)
+                st.rerun()
+        with col_no:
+            if st.button(
+                "❌ Cancel", key=f"ev_del_no_{event_id}"
+            ):
+                st.session_state.pop(f"confirm_del_ev_{event_id}", None)
+                st.rerun()
+
+# =========================================================
+# RSVP IMPORT DIALOG (Google Forms CSV)
+# =========================================================
+
+
+def _clear_dialog_rsvp_import():
+    st.session_state.pop("dialog_rsvp_import_event_id", None)
+
+
+@st.dialog(
+    "📥 Import RSVPs from Google Forms CSV",
+    width="large",
+    on_dismiss=_clear_dialog_rsvp_import,
+)
+def _render_rsvp_import_dialog(event_id):
+    event = db.get_event(event_id)
+    if not event:
+        st.warning("Event not found.")
+        return
+
+    st.subheader(f"📥 Import RSVPs — {event['name']}")
+    st.caption(
+        "Export responses from the Google Sheet linked to your Form, "
+        "then upload the CSV here."
+    )
+
+    uploaded = st.file_uploader(
+        "CSV file",
+        type=["csv"],
+        key=f"rsvp_csv_{event_id}",
+    )
+    if not uploaded:
+        st.info("Choose a CSV to continue.")
+        return
+
+    import csv as _csv
+    import io as _io
+
+    content = uploaded.getvalue().decode("utf-8-sig")
+    reader = _csv.DictReader(_io.StringIO(content))
+    rows = list(reader)
+    if not rows:
+        st.error("CSV is empty.")
+        return
+
+    headers = reader.fieldnames or []
+    st.write(f"**{len(rows)} row(s)** detected")
+    st.caption(f"Columns: {', '.join(headers)}")
+
+    # ---- Column mapping ----
+    st.markdown("**Column Mapping**")
+
+    def _find_header(candidates):
+        lowered = {h.lower().strip(): h for h in headers}
+        for c in candidates:
+            if c in lowered:
+                return lowered[c]
+        return None
+
+    auto_email = _find_header([
+        "email", "email address", "e-mail", "guest email",
+        "your email", "email address*",
+    ])
+    auto_name = _find_header([
+        "name", "full name", "guest name", "your name",
+        "attendee name",
+    ])
+    auto_attend = _find_header([
+        "attending", "will you attend", "rsvp", "will you attend?",
+        "attending?", "coming?",
+    ])
+    auto_plus = _find_header([
+        "plus ones", "guests", "number of guests",
+        "additional guests", "plus ones (including you)",
+    ])
+    auto_diet = _find_header([
+        "dietary", "dietary requirements", "dietary restrictions",
+        "food restrictions",
+    ])
+    auto_access = _find_header([
+        "accessibility", "accessibility needs", "accessibility requirements",
+    ])
+    auto_ts = _find_header(["timestamp", "submitted at", "date", "time"])
+
+    def _select_column(label, auto_value, optional=True):
+        options = ["—"] + list(headers)
+        default_idx = 0
+        if auto_value and auto_value in options:
+            default_idx = options.index(auto_value)
+        sel = st.selectbox(
+            label,
+            options=options,
+            index=default_idx,
+            key=f"rsvp_map_{event_id}_{label}",
+        )
+        if sel == "—":
+            if not optional:
+                st.warning(f"{label} is required.")
+            return None
+        return sel
+
+    col1, col2 = st.columns(2)
+    with col1:
+        col_email = _select_column("Email", auto_email, optional=False)
+        col_attend = _select_column("Attending", auto_attend, optional=False)
+        col_diet = _select_column("Dietary", auto_diet)
+    with col2:
+        col_name = _select_column("Name", auto_name)
+        col_plus = _select_column("Plus Ones", auto_plus)
+        col_access = _select_column("Accessibility", auto_access)
+
+    col_ts = _select_column(
+        "Timestamp (optional)", auto_ts, optional=True
+    )
+
+    # ---- Status mapping ----
+    st.markdown("**Status Mapping**")
+    st.caption(
+        "Map the values in your Attending column to app statuses."
+    )
+    attend_values = set()
+    if col_attend:
+        for r in rows:
+            val = (r.get(col_attend) or "").strip().lower()
+            if val:
+                attend_values.add(val)
+    attend_values = sorted(attend_values)
+
+    status_map = {}
+    for val in attend_values:
+        default_status = "accepted"
+        if val in ("yes", "y", "true", "attending", "accept", "accepted"):
+            default_status = "accepted"
+        elif val in ("no", "n", "false", "decline", "declined"):
+            default_status = "declined"
+        elif val in ("maybe", "tentative", "perhaps"):
+            default_status = "pending"
+        status_map[val] = st.selectbox(
+            f"'{val}' →",
+            options=GUEST_STATUSES,
+            index=(
+                GUEST_STATUSES.index(default_status)
+                if default_status in GUEST_STATUSES
+                else 0
+            ),
+            format_func=_guest_status_label,
+            key=f"rsvp_map_status_{event_id}_{val}",
+        )
+
+    # ---- Preview ----
+    st.markdown("**Preview**")
+    matched = 0
+    new = 0
+    ambiguous = 0
+    skipped = 0
+    errors = []
+    preview_rows = []
+
+    for i, r in enumerate(rows, start=2):
+        email = (r.get(col_email) or "").strip() if col_email else ""
+        name = (r.get(col_name) or "").strip() if col_name else ""
+        attend_val = (
+            (r.get(col_attend) or "").strip().lower()
+            if col_attend else ""
+        )
+
+        if not email and not name:
+            skipped += 1
+            continue
+        if not attend_val or attend_val not in status_map:
+            errors.append(f"Row {i}: no status for '{attend_val}'")
+            continue
+
+        target_status = status_map[attend_val]
+
+        matched_guest = None
+        if email:
+            matched_guest = db.find_event_guest_by_email(event_id, email)
+        if not matched_guest and name:
+            matched_guest = db.find_event_guest_by_name(event_id, name)
+
+        if matched_guest:
+            matched += 1
+            action = "UPDATE"
+        else:
+            new += 1
+            action = "NEW"
+
+        preview_rows.append({
+            "row": i,
+            "action": action,
+            "name": name or "—",
+            "email": email or "—",
+            "status": _guest_status_label(target_status),
+        })
+
+    col_a, col_b, col_c, col_d = st.columns(4)
+    with col_a:
+        st.metric("Matched", matched)
+    with col_b:
+        st.metric("New", new)
+    with col_c:
+        st.metric("Skipped", skipped)
+    with col_d:
+        st.metric("Errors", len(errors))
+
+    if preview_rows:
+        st.dataframe(
+            preview_rows[:20],
+            use_container_width=True,
+            hide_index=True,
+        )
+        if len(preview_rows) > 20:
+            st.caption(f"… and {len(preview_rows) - 20} more rows")
+
+    if errors:
+        with st.expander(f"⚠️ {len(errors)} error(s)"):
+            for e in errors:
+                st.caption(f"• {e}")
+
+    # ---- Import ----
+    st.divider()
+    col_do, col_cancel = st.columns(2)
+    with col_do:
+        if st.button(
+            "📥 Import RSVPs",
+            type="primary",
+            disabled=(matched + new == 0),
+            key=f"rsvp_import_btn_{event_id}",
+        ):
+            created = 0
+            updated = 0
+            for r in rows:
+                email = (r.get(col_email) or "").strip() if col_email else ""
+                name = (r.get(col_name) or "").strip() if col_name else ""
+                attend_val = (
+                    (r.get(col_attend) or "").strip().lower()
+                    if col_attend else ""
+                )
+                if not attend_val or attend_val not in status_map:
+                    continue
+                if not email and not name:
+                    continue
+
+                target_status = status_map[attend_val]
+                plus_ones = 0
+                if col_plus:
+                    try:
+                        plus_ones = int(
+                            (r.get(col_plus) or "0").strip() or 0
+                        )
+                    except Exception:
+                        plus_ones = 0
+                dietary = (
+                    (r.get(col_diet) or "").strip() if col_diet else ""
+                )
+                accessibility = (
+                    (r.get(col_access) or "").strip()
+                    if col_access else ""
+                )
+                ts = (r.get(col_ts) or "").strip() if col_ts else None
+
+                matched_guest = None
+                if email:
+                    matched_guest = db.find_event_guest_by_email(
+                        event_id, email
+                    )
+                if not matched_guest and name:
+                    matched_guest = db.find_event_guest_by_name(
+                        event_id, name
+                    )
+
+                if matched_guest:
+                    db.update_event_guest(
+                        matched_guest["id"],
+                        invite_status=target_status,
+                        plus_ones=plus_ones,
+                        dietary=dietary or None,
+                        accessibility=accessibility or None,
+                        rsvp_timestamp=ts,
+                        rsvp_source="google_form",
+                    )
+                    updated += 1
+                else:
+                    db.add_event_guest(
+                        event_id,
+                        guest_name=name or None,
+                        guest_email=email or None,
+                        invite_status=target_status,
+                        plus_ones=plus_ones,
+                        dietary=dietary or None,
+                        accessibility=accessibility or None,
+                        rsvp_timestamp=ts,
+                        rsvp_source="google_form",
+                    )
+                    created += 1
+
+            st.success(
+                f"✅ Import complete — "
+                f"{updated} updated, {created} created."
+            )
+            st.session_state.pop(f"rsvp_csv_{event_id}", None)
+            st.rerun()
+
+    with col_cancel:
+        if st.button(
+            "Cancel", key=f"rsvp_import_cancel_{event_id}"
+        ):
+            st.session_state.pop("dialog_rsvp_import_event_id", None)
+            st.rerun()
+
 def _render_meeting_detail_dialog(meeting_id):
     meeting = db.get_meeting(meeting_id)
     if not meeting:
@@ -4901,16 +5707,338 @@ with tab_meetings:
 
 
 # =========================================================
-# TAB: EVENTS (placeholder — built in Phase 4)
+# TAB: EVENTS
 # =========================================================
 
 with tab_events:
     st.header("🎉 Events")
-    st.info(
-        "The Events module is coming in **Phase 4**. "
-        "It will track event records, guest lists, RSVP imports from Google Forms, "
-        "and post-event debriefs."
+
+    # ---- Filters ----
+    col1, col2, col3, col4 = st.columns([2, 1.6, 2, 2.4])
+    with col1:
+        exec_filter_options = ["All Executives"] + [
+            f"{e['name']} (ID: {e['id']})"
+            for e in db.get_all_executives(active_only=False)
+        ]
+        exec_filter_label = st.selectbox(
+            "Executive", exec_filter_options, key="ev_filter_exec"
+        )
+        exec_filter_id = (
+            None
+            if exec_filter_label == "All Executives"
+            else int(exec_filter_label.split("(ID: ")[1].rstrip(")"))
+        )
+    with col2:
+        status_filter = st.selectbox(
+            "Status",
+            ["Active", "All"] + EVENT_STATUSES,
+            format_func=lambda s: {
+                "Active": "Active",
+                "All": "All",
+            }.get(s, _event_status_label(s)),
+            key="ev_filter_status",
+        )
+    with col3:
+        view_filter = st.selectbox(
+            "View",
+            [
+                "All events",
+                "Upcoming (30 days)",
+                "Upcoming (90 days)",
+                "Overdue RSVPs",
+            ],
+            key="ev_filter_view",
+        )
+    with col4:
+        search_query = st.text_input(
+            "Search", placeholder="Name or objective...",
+            key="ev_search",
+        )
+
+    # ---- New button ----
+    col_new, _sp = st.columns([1.2, 5])
+    with col_new:
+        if st.button(
+            "➕ New Event", type="primary", key="ev_new_btn"
+        ):
+            st.session_state["ev_show_create"] = True
+
+    # ---- Create form ----
+    if st.session_state.get("ev_show_create", False):
+        with st.expander("➕ New Event", expanded=True):
+            execs_active = db.get_all_executives(active_only=True)
+            if not execs_active:
+                st.warning(
+                    "No active executives. Add one in the sidebar first."
+                )
+            else:
+                with st.form("ev_create_form"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        exec_options = {
+                            e["name"]: e["id"] for e in execs_active
+                        }
+                        new_exec_label = st.selectbox(
+                            "Executive*",
+                            options=list(exec_options.keys()),
+                            key="ev_new_exec",
+                        )
+                        new_name = st.text_input(
+                            "Event Name*", key="ev_new_name"
+                        )
+                        new_type = st.selectbox(
+                            "Type",
+                            options=[""] + EVENT_TYPES,
+                            key="ev_new_type",
+                        )
+                        new_status = st.selectbox(
+                            "Status",
+                            options=EVENT_STATUSES,
+                            format_func=_event_status_label,
+                            key="ev_new_status",
+                        )
+                    with col2:
+                        new_date = st.date_input(
+                            "Date", value=datetime.now().date(),
+                            key="ev_new_date",
+                        )
+                        new_start = st.text_input(
+                            "Start Time (e.g. 19:00)",
+                            key="ev_new_start",
+                        )
+                        new_end = st.text_input(
+                            "End Time (e.g. 22:00)",
+                            key="ev_new_end",
+                        )
+                        new_headcount = st.number_input(
+                            "Expected Headcount", min_value=0, step=5,
+                            value=0, key="ev_new_headcount",
+                        )
+
+                    new_objective = st.text_area(
+                        "Objective", height=80, key="ev_new_obj"
+                    )
+
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        new_budget = st.number_input(
+                            "Budget Total", min_value=0.0, step=100.0,
+                            value=0.0, key="ev_new_budget",
+                        )
+                    with col_b:
+                        new_currency = st.selectbox(
+                            "Currency",
+                            options=["USD", "EUR", "GBP", "NGN",
+                                     "ZAR", "KES"],
+                            key="ev_new_currency",
+                        )
+
+                    # Venue picker
+                    venue_options = db.get_venues(active_only=True)
+                    venue_labels = {"—": None}
+                    for v in venue_options:
+                        label = v["name"]
+                        if v.get("city"):
+                            label += f" — {v['city']}"
+                        venue_labels[label] = v["id"]
+                    new_venue_label = st.selectbox(
+                        "Venue",
+                        options=list(venue_labels.keys()),
+                        key="ev_new_venue",
+                    )
+                    new_venue_id = venue_labels[new_venue_label]
+
+                    new_location = st.text_input(
+                        "Location Override (if no venue)",
+                        key="ev_new_loc",
+                    )
+
+                    st.markdown("**🔗 Links**")
+                    new_cal_url = st.text_input(
+                        "Calendar Event URL", key="ev_new_cal"
+                    )
+                    new_rsvp_url = st.text_input(
+                        "Google Form RSVP URL", key="ev_new_rsvp"
+                    )
+                    col_x, col_y = st.columns(2)
+                    with col_x:
+                        new_run_url = st.text_input(
+                            "Run of Show Doc URL", key="ev_new_run"
+                        )
+                    with col_y:
+                        new_logistics_url = st.text_input(
+                            "Logistics Doc URL", key="ev_new_log"
+                        )
+
+                    new_notes = st.text_area(
+                        "Quick Notes", height=100, key="ev_new_notes"
+                    )
+
+                    col_submit, col_cancel = st.columns(2)
+                    with col_submit:
+                        submitted = st.form_submit_button("💾 Create")
+                    with col_cancel:
+                        cancelled = st.form_submit_button("❌ Cancel")
+
+                    if cancelled:
+                        st.session_state["ev_show_create"] = False
+                        st.rerun()
+
+                    if submitted:
+                        if not new_name:
+                            st.error("Event Name is required.")
+                        else:
+                            new_exec_id = exec_options[new_exec_label]
+                            dupes = db.find_duplicate_events(
+                                new_exec_id, new_name,
+                                new_date.isoformat() if new_date else None,
+                            )
+                            if dupes:
+                                st.warning(
+                                    "⚠️ An event with the same name and "
+                                    "date already exists for this executive."
+                                )
+                                for d in dupes:
+                                    st.caption(
+                                        f"- {d['name']} "
+                                        f"({d.get('event_date')})"
+                                    )
+                                st.info(
+                                    "Change the name or date, or edit "
+                                    "the existing event instead."
+                                )
+                            else:
+                                db.add_event(
+                                    new_exec_id,
+                                    new_name,
+                                    objective=new_objective or None,
+                                    event_type=new_type or None,
+                                    status=new_status,
+                                    event_date=(
+                                        new_date.isoformat()
+                                        if new_date else None
+                                    ),
+                                    start_time=new_start or None,
+                                    end_time=new_end or None,
+                                    venue_id=new_venue_id,
+                                    location_override=(
+                                        new_location or None
+                                    ),
+                                    headcount=(
+                                        int(new_headcount)
+                                        if new_headcount else None
+                                    ),
+                                    budget_total=new_budget or 0,
+                                    currency=new_currency,
+                                    calendar_event_url=(
+                                        new_cal_url or None
+                                    ),
+                                    rsvp_form_url=new_rsvp_url or None,
+                                    run_of_show_url=new_run_url or None,
+                                    logistics_url=(
+                                        new_logistics_url or None
+                                    ),
+                                    notes_native=new_notes or None,
+                                )
+                                st.session_state["ev_show_create"] = False
+                                st.success("✅ Event created.")
+                                st.rerun()
+
+    st.divider()
+
+    # ---- Build filters ----
+    status_param = None
+    if status_filter == "Active":
+        status_param = [
+            "planning", "confirmed", "in_progress", "day_of",
+        ]
+    elif status_filter != "All":
+        status_param = status_filter
+
+    upcoming_only = view_filter in (
+        "Upcoming (30 days)", "Upcoming (90 days)"
     )
+    end_date_param = None
+    if view_filter == "Upcoming (30 days)":
+        end_date_param = (
+            datetime.now().date() + timedelta(days=30)
+        ).isoformat()
+    elif view_filter == "Upcoming (90 days)":
+        end_date_param = (
+            datetime.now().date() + timedelta(days=90)
+        ).isoformat()
+
+    overdue_rsvps = view_filter == "Overdue RSVPs"
+
+    events = db.get_events(
+        exec_id=exec_filter_id,
+        status=status_param,
+        upcoming_only=upcoming_only,
+        end_date=end_date_param,
+        overdue_rsvps=overdue_rsvps,
+        search=search_query or None,
+    )
+
+    # ---- List header ----
+    if not events:
+        st.info("No events match these filters.")
+    else:
+        st.write(f"**{len(events)} event(s)**")
+
+        for ev in events:
+            with st.container():
+                col1, col2, col3 = st.columns([6, 1, 1])
+                with col1:
+                    status_label = _event_status_label(
+                        ev.get("status") or "planning"
+                    )
+                    st.markdown(f"### {ev['name']}  ·  {status_label}")
+                    venue_display = (
+                        ev.get("venue_name")
+                        or ev.get("location_override")
+                        or "—"
+                    )
+                    st.caption(
+                        f"👤 {ev.get('executive_name') or '—'}  ·  "
+                        f"📅 {fmt_date(ev.get('event_date'))}"
+                        + (
+                            f"  ·  🕐 {ev['start_time']}"
+                            if ev.get("start_time") else ""
+                        )
+                        + f"  ·  📍 {venue_display}"
+                    )
+                    counts = db.get_event_guest_status_counts(ev["id"])
+                    accepted = counts.get("accepted", 0)
+                    pending = counts.get("pending", 0) + counts.get(
+                        "invited", 0
+                    )
+                    total = sum(counts.values())
+                    st.caption(
+                        f"👥 {total} guest(s)  ·  "
+                        f"✅ {accepted} accepted  ·  "
+                        f"⏳ {pending} pending"
+                    )
+                with col2:
+                    if st.button(
+                        "📂 Open",
+                        key=f"ev_open_{ev['id']}",
+                        use_container_width=True,
+                    ):
+                        st.session_state["dialog_event_id"] = ev["id"]
+                with col3:
+                    if st.button(
+                        "📥 RSVP",
+                        key=f"ev_rsvp_{ev['id']}",
+                        use_container_width=True,
+                        help="Import RSVPs from a Google Forms CSV",
+                    ):
+                        st.session_state[
+                            "dialog_rsvp_import_event_id"
+                        ] = ev["id"]
+
+                st.divider()
+
+    # ---- Nothing more inside tab_events ----
 
 
 # =========================================================
@@ -5110,6 +6238,84 @@ with tab_dashboard:
     st.divider()
     # ================================================
     # END COMMUNICATIONS WIDGETS
+    # ================================================
+
+    # ================================================
+    # EVENTS WIDGETS
+    # ================================================
+    upcoming_30 = db.get_events(
+        upcoming_only=True,
+        end_date=(
+            datetime.now().date() + timedelta(days=30)
+        ).isoformat(),
+        status=["planning", "confirmed", "in_progress", "day_of"],
+    )
+    overdue_rsvp_events = db.get_events_with_overdue_rsvps(days_ahead=14)
+    upcoming_90 = db.get_events(
+        upcoming_only=True,
+        end_date=(
+            datetime.now().date() + timedelta(days=90)
+        ).isoformat(),
+        status=["planning", "confirmed", "in_progress", "day_of"],
+    )
+
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.metric("🎉 Events (30d)", len(upcoming_30))
+    with col_b:
+        st.metric("⏳ Overdue RSVPs", len(overdue_rsvp_events))
+    with col_c:
+        st.metric("📅 Events (90d)", len(upcoming_90))
+
+    with st.expander(
+        "🎉 Upcoming Events (30 days)",
+        expanded=bool(upcoming_30),
+    ):
+        if not upcoming_30:
+            st.caption("No upcoming events.")
+        else:
+            for ev in upcoming_30:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.markdown(f"**{ev['name']}**")
+                    st.caption(
+                        f"👤 {ev.get('executive_name') or '—'}  ·  "
+                        f"📅 {fmt_date(ev.get('event_date'))}  ·  "
+                        f"{_event_status_label(ev.get('status'))}"
+                    )
+                with col2:
+                    if st.button(
+                        "Open", key=f"dash_ev_open_{ev['id']}"
+                    ):
+                        st.session_state["dialog_event_id"] = ev["id"]
+                        st.rerun()
+
+    with st.expander(
+        "⏳ Overdue RSVPs",
+        expanded=bool(overdue_rsvp_events),
+    ):
+        if not overdue_rsvp_events:
+            st.caption("No pending RSVPs for upcoming events.")
+        else:
+            for ev in overdue_rsvp_events:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.markdown(f"**{ev['name']}**")
+                    st.caption(
+                        f"📅 {fmt_date(ev.get('event_date'))}  ·  "
+                        f"⏳ {ev.get('pending_count', 0)} pending"
+                    )
+                with col2:
+                    if st.button(
+                        "Open",
+                        key=f"dash_ev_rsvp_open_{ev['id']}",
+                    ):
+                        st.session_state["dialog_event_id"] = ev["id"]
+                        st.rerun()
+
+    st.divider()
+    # ================================================
+    # END EVENTS WIDGETS
     # ================================================
 
     # ---- Load everything once ----
@@ -9344,3 +10550,14 @@ if st.session_state.get("dialog_comm_contact_id"):
     _render_communications_dialog(
         st.session_state["dialog_comm_contact_id"]
     )
+
+if st.session_state.get("dialog_event_id"):
+    _render_event_detail_dialog(
+        st.session_state["dialog_event_id"]
+    )
+
+if st.session_state.get("dialog_rsvp_import_event_id"):
+    _render_rsvp_import_dialog(
+        st.session_state["dialog_rsvp_import_event_id"]
+    )
+    

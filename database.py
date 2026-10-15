@@ -5279,3 +5279,414 @@ def auto_log_meeting_completion(meeting_id, exec_id):
     finally:
         conn.close()
     return created
+
+# =========================================================
+# EVENTS
+# =========================================================
+
+
+def add_event(
+    exec_id,
+    name,
+    objective=None,
+    event_type=None,
+    status="planning",
+    event_date=None,
+    start_time=None,
+    end_time=None,
+    venue_id=None,
+    location_override=None,
+    headcount=None,
+    budget_total=0,
+    currency="USD",
+    calendar_event_url=None,
+    run_of_show_url=None,
+    logistics_url=None,
+    notes_native=None,
+    debrief_notes=None,
+    rsvp_form_url=None,
+    linked_trip_id=None,
+):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO events
+               (exec_id, name, objective, event_type, status, event_date,
+                start_time, end_time, venue_id, location_override,
+                headcount, budget_total, currency, calendar_event_url,
+                run_of_show_url, logistics_url, notes_native,
+                debrief_notes, rsvp_form_url, linked_trip_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?)""",
+            (
+                exec_id,
+                name,
+                objective,
+                event_type,
+                status,
+                event_date,
+                start_time,
+                end_time,
+                venue_id,
+                location_override,
+                headcount,
+                budget_total,
+                currency,
+                calendar_event_url,
+                run_of_show_url,
+                logistics_url,
+                notes_native,
+                debrief_notes,
+                rsvp_form_url,
+                linked_trip_id,
+            ),
+        )
+        conn.commit()
+        return c.lastrowid
+    finally:
+        conn.close()
+
+
+def get_event(event_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT ev.*, e.name AS executive_name,
+                      v.name AS venue_name, v.city AS venue_city,
+                      v.country AS venue_country
+               FROM events ev
+               LEFT JOIN executives e ON ev.exec_id = e.id
+               LEFT JOIN venues v ON ev.venue_id = v.id
+               WHERE ev.id = ?""",
+            (event_id,),
+        )
+        row = c.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_events(
+    exec_id=None,
+    status=None,
+    start_date=None,
+    end_date=None,
+    search=None,
+    upcoming_only=False,
+    overdue_rsvps=False,
+):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        conditions, params = [], []
+        if exec_id:
+            conditions.append("ev.exec_id = ?")
+            params.append(exec_id)
+        if status:
+            if isinstance(status, (list, tuple)):
+                placeholders = ",".join("?" * len(status))
+                conditions.append(f"ev.status IN ({placeholders})")
+                params.extend(status)
+            else:
+                conditions.append("ev.status = ?")
+                params.append(status)
+        if start_date:
+            conditions.append("ev.event_date >= ?")
+            params.append(start_date)
+        if end_date:
+            conditions.append("ev.event_date <= ?")
+            params.append(end_date)
+        if upcoming_only:
+            today_iso = datetime.now().date().isoformat()
+            conditions.append("ev.event_date >= ?")
+            params.append(today_iso)
+        if overdue_rsvps:
+            # Events within 14 days that still have guests in pending/invited
+            today_iso = datetime.now().date().isoformat()
+            cutoff = (datetime.now().date() + timedelta(days=14)).isoformat()
+            conditions.append("ev.event_date >= ?")
+            params.append(today_iso)
+            conditions.append("ev.event_date <= ?")
+            params.append(cutoff)
+            conditions.append("""EXISTS (
+                    SELECT 1 FROM event_guests eg
+                    WHERE eg.event_id = ev.id
+                      AND eg.invite_status IN ('invited','pending')
+                )""")
+        if search:
+            like = f"%{search.lower()}%"
+            conditions.append(
+                "(LOWER(ev.name) LIKE ? " "OR LOWER(COALESCE(ev.objective,'')) LIKE ?)"
+            )
+            params.extend([like, like])
+
+        q = """SELECT ev.*, e.name AS executive_name,
+                      v.name AS venue_name, v.city AS venue_city,
+                      (SELECT COUNT(*) FROM event_guests eg
+                       WHERE eg.event_id = ev.id) AS guest_count,
+                      (SELECT COUNT(*) FROM event_guests eg
+                       WHERE eg.event_id = ev.id
+                         AND eg.invite_status = 'accepted') AS accepted_count
+               FROM events ev
+               LEFT JOIN executives e ON ev.exec_id = e.id
+               LEFT JOIN venues v ON ev.venue_id = v.id"""
+        if conditions:
+            q += " WHERE " + " AND ".join(conditions)
+        q += " ORDER BY ev.event_date DESC, ev.start_time DESC, ev.id DESC"
+        c.execute(q, params)
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def update_event(event_id, **kwargs):
+    if not kwargs:
+        return
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        fields, params = [], []
+        for k, v in kwargs.items():
+            fields.append(f"{k} = ?")
+            params.append(v)
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(event_id)
+        c.execute(f"UPDATE events SET {', '.join(fields)} WHERE id = ?", params)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_event(event_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM events WHERE id = ?", (event_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def find_duplicate_events(exec_id, name, event_date, exclude_id=None):
+    if not exec_id or not name or not event_date:
+        return []
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        q = """SELECT * FROM events
+               WHERE exec_id = ? AND LOWER(name) = LOWER(?)
+                 AND event_date = ?"""
+        params = [exec_id, name.strip(), event_date]
+        if exclude_id:
+            q += " AND id != ?"
+            params.append(exclude_id)
+        c.execute(q, params)
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+# --- Guests ---
+
+
+def add_event_guest(
+    event_id,
+    contact_id=None,
+    guest_name=None,
+    guest_email=None,
+    invite_status="not_invited",
+    plus_ones=0,
+    plus_one_names=None,
+    dietary=None,
+    allergy_details=None,
+    accessibility=None,
+    badge_name=None,
+    seating_preference=None,
+    rsvp_timestamp=None,
+    rsvp_source=None,
+    notes=None,
+):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO event_guests
+               (event_id, contact_id, guest_name, guest_email,
+                invite_status, plus_ones, plus_one_names, dietary,
+                allergy_details, accessibility, badge_name,
+                seating_preference, rsvp_timestamp, rsvp_source, notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                event_id,
+                contact_id,
+                guest_name,
+                guest_email,
+                invite_status,
+                plus_ones,
+                plus_one_names,
+                dietary,
+                allergy_details,
+                accessibility,
+                badge_name,
+                seating_preference,
+                rsvp_timestamp,
+                rsvp_source,
+                notes,
+            ),
+        )
+        conn.commit()
+        return c.lastrowid
+    finally:
+        conn.close()
+
+
+def get_event_guests(event_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT eg.*, c.name AS contact_name,
+                      c.email AS contact_email, c.phone AS contact_phone
+               FROM event_guests eg
+               LEFT JOIN contacts c ON eg.contact_id = c.id
+               WHERE eg.event_id = ?
+               ORDER BY eg.invite_status, c.name, eg.guest_name""",
+            (event_id,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_event_guest(guest_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute("SELECT * FROM event_guests WHERE id = ?", (guest_id,))
+        row = c.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def find_event_guest_by_email(event_id, email):
+    if not event_id or not email:
+        return None
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT * FROM event_guests
+               WHERE event_id = ?
+                 AND LOWER(COALESCE(guest_email,'')) = LOWER(?)""",
+            (event_id, email.strip()),
+        )
+        row = c.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def find_event_guest_by_name(event_id, name):
+    if not event_id or not name:
+        return None
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT * FROM event_guests
+               WHERE event_id = ?
+                 AND LOWER(COALESCE(guest_name,'')) = LOWER(?)""",
+            (event_id, name.strip()),
+        )
+        row = c.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def update_event_guest(guest_id, **kwargs):
+    if not kwargs:
+        return
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        fields, params = [], []
+        for k, v in kwargs.items():
+            fields.append(f"{k} = ?")
+            params.append(v)
+        params.append(guest_id)
+        c.execute(
+            f"UPDATE event_guests SET {', '.join(fields)} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_event_guest(guest_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM event_guests WHERE id = ?", (guest_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_event_guest_status_counts(event_id):
+    """Return {'status': count} for an event."""
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT invite_status, COUNT(*) FROM event_guests
+               WHERE event_id = ?
+               GROUP BY invite_status""",
+            (event_id,),
+        )
+        return {row[0] or "not_invited": row[1] for row in c.fetchall()}
+    finally:
+        conn.close()
+
+
+def get_events_with_overdue_rsvps(days_ahead=14):
+    """
+    Return events within `days_ahead` days that still have guests in
+    'invited' or 'pending' status.
+    """
+    today = datetime.now().date()
+    cutoff = (today + timedelta(days=days_ahead)).isoformat()
+    today_iso = today.isoformat()
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT DISTINCT ev.*, e.name AS executive_name,
+                      (SELECT COUNT(*) FROM event_guests eg
+                       WHERE eg.event_id = ev.id
+                         AND eg.invite_status IN ('invited','pending'))
+                          AS pending_count
+               FROM events ev
+               LEFT JOIN executives e ON ev.exec_id = e.id
+               LEFT JOIN event_guests eg ON eg.event_id = ev.id
+               WHERE ev.event_date >= ?
+                 AND ev.event_date <= ?
+                 AND eg.invite_status IN ('invited','pending')
+               ORDER BY ev.event_date ASC""",
+            (today_iso, cutoff),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
