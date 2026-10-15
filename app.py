@@ -12,6 +12,7 @@ import re
 import pycountry
 import brief_generator
 import mobile_export
+import ticktick_sync
 from openpyxl import Workbook
 from excel_export import (
     export_profile_to_excel,
@@ -2404,6 +2405,217 @@ with st.sidebar.expander("📱 Mobile Export", expanded=False):
             st.session_state.pop("mobile_export_meta", None)
             st.rerun()
 
+with st.sidebar.expander("✅ TickTick", expanded=False):
+    if not ticktick_sync.is_connected():
+        st.caption(
+            "Connect your TickTick account to sync action items "
+            "and next actions. Register an app at "
+            "**developer.ticktick.com** and paste your credentials below."
+        )
+
+        config = db.get_ticktick_config() or {}
+        client_id = st.text_input(
+            "Client ID",
+            value=config.get("client_id") or "",
+            key="tt_client_id",
+        )
+        client_secret = st.text_input(
+            "Client Secret",
+            value=config.get("client_secret") or "",
+            type="password",
+            key="tt_client_secret",
+        )
+
+        if st.button(
+            "🔗 Connect TickTick",
+            key="tt_connect_btn",
+            use_container_width=True,
+        ):
+            if not client_id or not client_secret:
+                st.error("Client ID and Secret are required.")
+            else:
+                # Persist credentials now so we can exchange code later
+                db.save_ticktick_config(
+                    client_id=client_id,
+                    client_secret=client_secret,
+                )
+                started = ticktick_sync.start_oauth_callback_server()
+                if not started:
+                    st.error(
+                        f"Port {ticktick_sync.CALLBACK_PORT} is in use. "
+                        "Close any other apps using it and try again."
+                    )
+                else:
+                    auth_url = ticktick_sync.build_authorize_url(
+                        client_id
+                    )
+                    st.session_state["tt_auth_url"] = auth_url
+                    st.success("Callback server started.")
+
+        if st.session_state.get("tt_auth_url"):
+            st.markdown(
+                f"**[👉 Authorize on TickTick]"
+                f"({st.session_state['tt_auth_url']})**"
+            )
+            st.caption(
+                "After authorizing, TickTick will redirect to "
+                "`localhost:8502`. Come back here and click "
+                "**Check Connection**."
+            )
+            if st.button(
+                "🔄 Check Connection",
+                key="tt_check_btn",
+                use_container_width=True,
+            ):
+                state = ticktick_sync.get_oauth_state()
+                code = state.get("code")
+                if not code:
+                    st.warning(
+                        "No auth code received yet. Make sure you "
+                        "completed the authorization in your browser."
+                    )
+                else:
+                    with st.spinner("Exchanging code…"):
+                        result = ticktick_sync.exchange_code_for_tokens(
+                            client_id, client_secret, code
+                        )
+                    if result.get("error"):
+                        st.error(result["error"])
+                    else:
+                        st.session_state.pop("tt_auth_url", None)
+                        st.success("✅ Connected to TickTick!")
+                        st.rerun()
+    else:
+        st.success("✅ Connected")
+        config = db.get_ticktick_config() or {}
+        last_sync = config.get("last_sync_at")
+        if last_sync:
+            st.caption(f"Last sync: {fmt_datetime(last_sync)}")
+        else:
+            st.caption("No sync yet.")
+
+        if st.button(
+            "🔄 Sync Now",
+            key="tt_sync_now",
+            use_container_width=True,
+        ):
+            with st.spinner("Syncing with TickTick…"):
+                result = ticktick_sync.full_sync()
+            if result.get("errors"):
+                for e in result["errors"]:
+                    st.error(e)
+            else:
+                st.success(
+                    f"✅ Synced {result.get('projects', 0)} projects, "
+                    f"{result.get('tasks_pulled', 0)} tasks."
+                )
+            st.rerun()
+
+        # ---- Tag mapping ----
+        st.divider()
+        st.caption("🏷️ **Tag → Executive Mapping**")
+        st.caption(
+            "Map TickTick tags to executives so tasks are attributed "
+            "correctly in the app."
+        )
+
+        with st.expander("Manage mappings", expanded=False):
+            # Get all tags in use from the local mirror
+            all_tags = db.get_all_ticktick_tags_in_use()
+            existing_mappings = {
+                m["tag"]: m for m in db.get_ticktick_tag_map()
+            }
+
+            if not all_tags and not existing_mappings:
+                st.caption(
+                    "No tags found yet. Sync to discover tags, "
+                    "or add a mapping manually below."
+                )
+
+            # Existing mappings
+            if existing_mappings:
+                st.markdown("**Current Mappings**")
+                for tag, m in sorted(existing_mappings.items()):
+                    col_a, col_b, col_c = st.columns([2, 3, 0.5])
+                    with col_a:
+                        st.markdown(f"`{tag}`")
+                    with col_b:
+                        label = (
+                            m.get("executive_name")
+                            or m.get("display_name")
+                            or "—"
+                        )
+                        if not m.get("exec_id"):
+                            label = f"{label} (no exec)"
+                        st.caption(label)
+                    with col_c:
+                        if st.button(
+                            "🗑️",
+                            key=f"tt_map_del_{tag}",
+                            help="Remove mapping",
+                        ):
+                            db.delete_ticktick_tag_map(tag)
+                            st.rerun()
+
+            # Unmapped tags
+            unmapped = [
+                t for t, _ in all_tags if t not in existing_mappings
+            ]
+            if unmapped:
+                st.markdown("**Unmapped Tags**")
+                for tag in unmapped:
+                    st.caption(f"`{tag}`")
+
+            # Add / edit a mapping
+            st.markdown("**Add or Update**")
+            with st.form(key="tt_tag_map_form", clear_on_submit=True):
+                tag_input = st.text_input(
+                    "Tag (as it appears in TickTick)",
+                    key="tt_map_tag_input",
+                )
+                execs = db.get_all_executives(active_only=False)
+                exec_options = {"— None —": None}
+                exec_options.update(
+                    {e["name"]: e["id"] for e in execs}
+                )
+                exec_label = st.selectbox(
+                    "Executive",
+                    options=list(exec_options.keys()),
+                    key="tt_map_exec_input",
+                )
+                display_input = st.text_input(
+                    "Display name (optional — used if no exec is "
+                    "selected)",
+                    key="tt_map_display_input",
+                )
+                notes_input = st.text_input(
+                    "Notes (optional)",
+                    key="tt_map_notes_input",
+                )
+                if st.form_submit_button("💾 Save Mapping"):
+                    if not tag_input:
+                        st.error("Tag is required.")
+                    else:
+                        db.upsert_ticktick_tag_map(
+                            tag=tag_input,
+                            exec_id=exec_options[exec_label],
+                            display_name=(
+                                display_input or None
+                            ),
+                            notes=notes_input or None,
+                        )
+                        st.success(f"✅ Mapped `{tag_input}`.")
+                        st.rerun()
+
+        if st.button(
+            "🚪 Disconnect",
+            key="tt_disconnect",
+            use_container_width=True,
+        ):
+            db.clear_ticktick_config()
+            st.success("Disconnected.")
+            st.rerun()
+
 with st.sidebar.expander("💱 Exchange Rates", expanded=False):
     st.caption("Fetch latest rates and store in the database. "
                "Rates are cached and reused for historical accuracy.")
@@ -4653,6 +4865,26 @@ def _render_communications_dialog(contact_id):
         st.metric("Next Action", next_action)
     with col_d:
         st.metric("Due", next_action_date)
+
+    # ---- Push next action to TickTick ----
+    if contact.get("next_action") and ticktick_sync.is_connected():
+        existing = db.get_ticktick_tasks_for_link(
+            "contact_next_action", contact_id
+        )
+        if existing:
+            st.caption("✅ Next action is already on TickTick")
+        else:
+            if st.button(
+                "↗️ Push Next Action to TickTick",
+                key=f"comm_push_{contact_id}",
+                use_container_width=True,
+            ):
+                tid, err = ticktick_sync.push_next_action(contact_id)
+                if err and err != "Already pushed.":
+                    st.error(err)
+                else:
+                    st.success("Pushed to TickTick.")
+                    st.rerun()
 
     st.divider()
 
@@ -7328,7 +7560,7 @@ def _render_meeting_detail_dialog(meeting_id):
 
     if action_items:
         for item in action_items:
-            col1, col2, col3, col4 = st.columns([4, 2, 2, 0.5])
+            col1, col2, col3, col4, col5 = st.columns([4, 2, 2, 0.5, 0.8])
             with col1:
                 st.markdown(f"**{item['description']}**")
                 owner = (
@@ -7356,6 +7588,27 @@ def _render_meeting_detail_dialog(meeting_id):
             with col3:
                 st.caption("")
             with col4:
+                pushed = item.get("pushed_to_ticktick")
+                if pushed:
+                    st.caption("✅ Pushed")
+                else:
+                    if ticktick_sync.is_connected():
+                        if st.button(
+                            "↗️",
+                            key=f"mtg_act_push_{item['id']}",
+                            help="Push to TickTick",
+                        ):
+                            tid, err = ticktick_sync.push_action_item(
+                                item["id"]
+                            )
+                            if err and err != "Already pushed.":
+                                st.error(err)
+                            else:
+                                st.success("Pushed to TickTick.")
+                                st.rerun()
+                    else:
+                        st.caption("—")
+            with col5:
                 if st.button("🗑️", key=f"mtg_act_del_{item['id']}"):
                     db.delete_meeting_action_item(item["id"])
                     st.rerun()
@@ -8782,6 +9035,120 @@ with tab_dashboard:
     st.divider()
     # ================================================
     # END TODAY AT A GLANCE
+    # ================================================
+
+    # ================================================
+    # TICKTICK TASKS
+    # ================================================
+    if ticktick_sync.is_connected():
+        # Executive filter
+        execs_for_tt_filter = db.get_all_executives(active_only=True)
+        tt_exec_options = {"All executives": None}
+        tt_exec_options.update(
+            {e["name"]: e["id"] for e in execs_for_tt_filter}
+        )
+        tt_exec_label = st.selectbox(
+            "TickTick — filter by executive",
+            options=list(tt_exec_options.keys()),
+            key="tt_dash_exec_filter",
+        )
+        tt_exec_id_filter = tt_exec_options[tt_exec_label]
+
+        ticktick_tasks_all = db.get_ticktick_tasks_filtered(
+            exec_id=tt_exec_id_filter, open_only=True
+        )
+        ticktick_due_soon = [
+            t for t in db.get_ticktick_tasks_due_soon(days=7)
+            if tt_exec_id_filter is None
+            or db.resolve_ticktick_task_executive(t)[0]
+                == tt_exec_id_filter
+        ]
+        ticktick_overdue = [
+            t for t in ticktick_tasks_all
+            if t.get("due_date") and t["due_date"] < today_iso
+        ]
+
+        with st.expander(
+            f"✅ TickTick — {len(ticktick_tasks_all)} open task(s)",
+            expanded=False,
+        ):
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                st.metric("Open", len(ticktick_tasks_all))
+            with col_b:
+                st.metric("Due (7d)", len(ticktick_due_soon))
+            with col_c:
+                st.metric("Overdue", len(ticktick_overdue))
+
+            if ticktick_overdue:
+                st.markdown("**🔴 Overdue**")
+                for t in ticktick_overdue[:10]:
+                    exec_id_resolved, exec_name_resolved, tag_used = (
+                        db.resolve_ticktick_task_executive(t)
+                    )
+                    col1, col2 = st.columns([5, 1])
+                    with col1:
+                        st.markdown(f"**{t.get('title') or '—'}**")
+                        caption_bits = [f"Due: {t.get('due_date')}"]
+                        if exec_name_resolved:
+                            caption_bits.append(
+                                f"👤 {exec_name_resolved}"
+                            )
+                            if tag_used:
+                                caption_bits.append(f"`{tag_used}`")
+                        st.caption("  ·  ".join(caption_bits))
+                    with col2:
+                        if st.button(
+                            "✓",
+                            key=f"tt_complete_{t['ticktick_id']}",
+                            help="Mark complete in TickTick",
+                        ):
+                            err = ticktick_sync.complete_task(
+                                t["ticktick_id"]
+                            )
+                            if err:
+                                st.error(err)
+                            else:
+                                st.success("Completed.")
+                                st.rerun()
+
+            if ticktick_due_soon:
+                st.markdown("**⏳ Due This Week**")
+                for t in ticktick_due_soon[:10]:
+                    exec_id_resolved, exec_name_resolved, tag_used = (
+                        db.resolve_ticktick_task_executive(t)
+                    )
+                    col1, col2 = st.columns([5, 1])
+                    with col1:
+                        st.markdown(f"**{t.get('title') or '—'}**")
+                        caption_bits = [f"Due: {t.get('due_date')}"]
+                        if exec_name_resolved:
+                            caption_bits.append(
+                                f"👤 {exec_name_resolved}"
+                            )
+                            if tag_used:
+                                caption_bits.append(f"`{tag_used}`")
+                        st.caption("  ·  ".join(caption_bits))
+                    with col2:
+                        if st.button(
+                            "✓",
+                            key=f"tt_complete_week_{t['ticktick_id']}",
+                        ):
+                            err = ticktick_sync.complete_task(
+                                t["ticktick_id"]
+                            )
+                            if err:
+                                st.error(err)
+                            else:
+                                st.success("Completed.")
+                                st.rerun()
+
+            if not ticktick_tasks_all:
+                st.caption("No open tasks in TickTick.")
+
+        st.divider()
+    # ================================================
+    # END TICKTICK WIDGET
     # ================================================
 
     # ================================================

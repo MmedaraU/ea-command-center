@@ -929,6 +929,59 @@ def init_db():
             error_message TEXT
         )""")
 
+        # --- TickTick integration ---
+        c.execute("""CREATE TABLE IF NOT EXISTS ticktick_config (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id TEXT,
+            client_secret TEXT,
+            access_token TEXT,
+            refresh_token TEXT,
+            expires_at TEXT,
+            last_sync_at TEXT,
+            user_timezone TEXT,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS ticktick_projects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id TEXT UNIQUE NOT NULL,
+            name TEXT,
+            color TEXT,
+            closed INTEGER DEFAULT 0,
+            last_synced_at TEXT
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS ticktick_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticktick_id TEXT UNIQUE,
+            project_id TEXT,
+            title TEXT,
+            content TEXT,
+            status INTEGER DEFAULT 0,
+            priority INTEGER DEFAULT 0,
+            due_date TEXT,
+            start_date TEXT,
+            is_all_day INTEGER DEFAULT 0,
+            tags TEXT,
+            modified_time TEXT,
+            created_time TEXT,
+            completed_time TEXT,
+            linked_to_type TEXT,
+            linked_to_id INTEGER,
+            last_synced_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS ticktick_tag_map (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tag TEXT UNIQUE NOT NULL,
+            exec_id INTEGER,
+            display_name TEXT,
+            notes TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (exec_id) REFERENCES executives(id) ON DELETE SET NULL
+        )""")
+
         # --- Indexes for new tables ---
         for idx in [
             "CREATE INDEX IF NOT EXISTS idx_meetings_exec ON meetings(exec_id)",
@@ -967,6 +1020,10 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_budget_templates_active ON budget_templates(is_active)",
             "CREATE INDEX IF NOT EXISTS idx_budget_template_items_template ON budget_template_items(template_id)",
             "CREATE INDEX IF NOT EXISTS idx_restore_log_date ON restore_log(performed_at)",
+            "CREATE INDEX IF NOT EXISTS idx_ticktick_tasks_status ON ticktick_tasks(status)",
+            "CREATE INDEX IF NOT EXISTS idx_ticktick_tasks_due ON ticktick_tasks(due_date)",
+            "CREATE INDEX IF NOT EXISTS idx_ticktick_tasks_link ON ticktick_tasks(linked_to_type, linked_to_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tt_tag_map_exec ON ticktick_tag_map(exec_id)",
         ]:
             try:
                 c.execute(idx)
@@ -7370,3 +7427,345 @@ def get_restore_log(limit=20):
         return [dict(r) for r in c.fetchall()]
     finally:
         conn.close()
+
+
+# =========================================================
+# TICKTICK
+# =========================================================
+
+
+def get_ticktick_config():
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute("SELECT * FROM ticktick_config ORDER BY id LIMIT 1")
+        row = c.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def save_ticktick_config(**kwargs):
+    if not kwargs:
+        return
+    existing = get_ticktick_config()
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        if existing:
+            fields, params = [], []
+            for k, v in kwargs.items():
+                fields.append(f"{k} = ?")
+                params.append(v)
+            fields.append("updated_at = CURRENT_TIMESTAMP")
+            params.append(existing["id"])
+            c.execute(
+                f"UPDATE ticktick_config SET {', '.join(fields)} "
+                "WHERE id = ?",
+                params,
+            )
+        else:
+            cols = list(kwargs.keys())
+            placeholders = ",".join("?" * len(cols))
+            c.execute(
+                f"INSERT INTO ticktick_config ({', '.join(cols)}) "
+                f"VALUES ({placeholders})",
+                [kwargs[k] for k in cols],
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def clear_ticktick_config():
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM ticktick_config")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def upsert_ticktick_project(project_id, name=None, color=None, closed=0):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO ticktick_projects
+               (project_id, name, color, closed, last_synced_at)
+               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(project_id) DO UPDATE SET
+                 name = excluded.name,
+                 color = excluded.color,
+                 closed = excluded.closed,
+                 last_synced_at = CURRENT_TIMESTAMP""",
+            (project_id, name, color, 1 if closed else 0),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_ticktick_projects():
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT * FROM ticktick_projects
+               WHERE closed = 0
+               ORDER BY name"""
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def upsert_ticktick_task(**kwargs):
+    """
+    Insert or update a TickTick task mirror. Match by ticktick_id.
+    """
+    if not kwargs.get("ticktick_id"):
+        return
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        fields = list(kwargs.keys())
+        placeholders = ",".join("?" * len(fields))
+        updates = ", ".join(
+            f"{f} = excluded.{f}"
+            for f in fields if f != "ticktick_id"
+        )
+        sql = (
+            f"INSERT INTO ticktick_tasks ({', '.join(fields)}, "
+            f"last_synced_at) VALUES ({placeholders}, CURRENT_TIMESTAMP) "
+            f"ON CONFLICT(ticktick_id) DO UPDATE SET {updates}, "
+            f"last_synced_at = CURRENT_TIMESTAMP"
+        )
+        c.execute(sql, [kwargs[f] for f in fields])
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_ticktick_task(ticktick_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT * FROM ticktick_tasks WHERE ticktick_id = ?",
+            (ticktick_id,),
+        )
+        row = c.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_ticktick_tasks(open_only=True):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        q = "SELECT * FROM ticktick_tasks"
+        if open_only:
+            q += " WHERE status = 0"
+        q += " ORDER BY due_date IS NULL, due_date ASC, id DESC"
+        c.execute(q)
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_ticktick_tasks_for_link(linked_to_type, linked_to_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT * FROM ticktick_tasks
+               WHERE linked_to_type = ? AND linked_to_id = ?""",
+            (linked_to_type, linked_to_id),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def delete_ticktick_task(ticktick_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM ticktick_tasks WHERE ticktick_id = ?",
+            (ticktick_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_ticktick_tasks_due_soon(days=7):
+    today = datetime.now().date()
+    cutoff = (today + timedelta(days=days)).isoformat()
+    today_iso = today.isoformat()
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT * FROM ticktick_tasks
+               WHERE status = 0
+                 AND due_date IS NOT NULL
+                 AND due_date >= ?
+                 AND due_date <= ?
+               ORDER BY due_date ASC""",
+            (today_iso, cutoff),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+# =========================================================
+# TICKTICK TAG MAPPING
+# =========================================================
+
+
+def upsert_ticktick_tag_map(tag, exec_id=None, display_name=None, notes=None):
+    """Insert or update a tag → executive mapping."""
+    if not tag:
+        return
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO ticktick_tag_map
+               (tag, exec_id, display_name, notes)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(tag) DO UPDATE SET
+                 exec_id = excluded.exec_id,
+                 display_name = excluded.display_name,
+                 notes = excluded.notes""",
+            (tag.strip(), exec_id, display_name, notes),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_ticktick_tag_map(tag=None):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        if tag:
+            c.execute(
+                """SELECT m.*, e.name AS executive_name
+                   FROM ticktick_tag_map m
+                   LEFT JOIN executives e ON m.exec_id = e.id
+                   WHERE m.tag = ?""",
+                (tag.strip(),),
+            )
+            row = c.fetchone()
+            return dict(row) if row else None
+        c.execute(
+            """SELECT m.*, e.name AS executive_name
+               FROM ticktick_tag_map m
+               LEFT JOIN executives e ON m.exec_id = e.id
+               ORDER BY m.tag"""
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def delete_ticktick_tag_map(tag):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM ticktick_tag_map WHERE tag = ?", (tag.strip(),)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_all_ticktick_tags_in_use():
+    """
+    Return a list of every tag seen in the local task mirror,
+    with usage counts. Tags are stored as JSON arrays in
+    ticktick_tasks.tags.
+    """
+    import json as _json
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute("SELECT tags FROM ticktick_tasks")
+        counts = {}
+        for (raw,) in c.fetchall():
+            try:
+                tags = _json.loads(raw) if raw else []
+            except Exception:
+                tags = []
+            for t in tags:
+                if not t:
+                    continue
+                key = str(t).strip()
+                if not key:
+                    continue
+                counts[key] = counts.get(key, 0) + 1
+        return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    finally:
+        conn.close()
+
+
+def resolve_ticktick_task_executive(task):
+    """
+    Given a task dict, return (exec_id, exec_name, tag_used) for the
+    first mapped tag. If no tag is mapped, returns (None, None, None).
+    """
+    if not task:
+        return None, None, None
+    import json as _json
+    try:
+        tags = _json.loads(task.get("tags") or "[]")
+    except Exception:
+        tags = []
+    for tag in tags:
+        mapping = get_ticktick_tag_map(tag)
+        if mapping and mapping.get("exec_id"):
+            return (
+                mapping["exec_id"],
+                mapping.get("executive_name") or mapping.get("display_name"),
+                tag,
+            )
+    # If no mapping, check for a display name
+    for tag in tags:
+        mapping = get_ticktick_tag_map(tag)
+        if mapping and mapping.get("display_name"):
+            return (
+                None,
+                mapping.get("display_name"),
+                tag,
+            )
+    return None, None, None
+
+
+def get_ticktick_tasks_filtered(exec_id=None, open_only=True):
+    """
+    Return tasks filtered by executive using the tag mapping.
+    If exec_id is None, returns all tasks.
+    """
+    tasks = get_ticktick_tasks(open_only=open_only)
+    if not exec_id:
+        return tasks
+    result = []
+    for t in tasks:
+        resolved_exec, _, _ = resolve_ticktick_task_executive(t)
+        if resolved_exec == exec_id:
+            result.append(t)
+    return result
