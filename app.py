@@ -10,6 +10,7 @@ import os
 import json
 import re
 import pycountry
+import brief_generator
 from openpyxl import Workbook
 from excel_export import (
     export_profile_to_excel,
@@ -1312,6 +1313,53 @@ def _trip_dropdown_options(exec_id, current_trip_id=None):
     finally:
         conn.close()
     return options
+
+# =========================================================
+# PREP BRIEF PANEL
+# =========================================================
+
+
+def _render_brief_panel(container_key, brief_html, default_filename):
+    """
+    Render the standard 'Prep Brief' expander content.
+
+    Given a pre-generated HTML string, shows:
+      - Preview toggle (inline render via components.html)
+      - Download button
+      - Open in new tab via data URL (Streamlit download as workaround)
+    """
+    if not brief_html:
+        st.caption("No brief available — the record may be empty.")
+        return
+
+    col_a, col_b = st.columns([1, 1])
+    with col_a:
+        preview_key = f"{container_key}_preview_open"
+        if st.button(
+            "👁 Preview" if not st.session_state.get(preview_key) else "🙈 Hide",
+            key=f"{container_key}_preview_btn",
+            use_container_width=True,
+        ):
+            st.session_state[preview_key] = not st.session_state.get(
+                preview_key, False
+            )
+            st.rerun()
+    with col_b:
+        st.download_button(
+            "⬇️ Download HTML",
+            data=brief_html,
+            file_name=default_filename,
+            mime="text/html",
+            key=f"{container_key}_download_btn",
+            use_container_width=True,
+        )
+
+    if st.session_state.get(f"{container_key}_preview_open", False):
+        st.caption(
+            "ℹ️ Links in the preview may not open. "
+            "Download the HTML to use them."
+        )
+        components.html(brief_html, height=600, scrolling=True)
 
 # =========================================================
 # PAGE CONFIG
@@ -4504,6 +4552,30 @@ def _render_event_detail_dialog(event_id):
         f"📅 {fmt_date(event.get('event_date'))}"
     )
 
+    # ---- Prep Brief ----
+    with st.expander("📋 Prep Brief", expanded=False):
+        if st.button(
+            "Generate Brief",
+            key=f"ev_brief_gen_{event_id}",
+            use_container_width=True,
+        ):
+            brief_html = brief_generator.generate_event_brief_html(event_id)
+            st.session_state[f"ev_brief_html_{event_id}"] = brief_html
+            st.rerun()
+
+        brief_html = st.session_state.get(f"ev_brief_html_{event_id}")
+        if brief_html:
+            _render_brief_panel(
+                container_key=f"ev_brief_{event_id}",
+                brief_html=brief_html,
+                default_filename=f"event_brief_{event_id}.html",
+            )
+        else:
+            st.caption(
+                "Click **Generate Brief** to build a prep document with "
+                "confirmed guests, vendors, and budget."
+            )
+
     # ================================================
     # SECTION: Edit Event
     # ================================================
@@ -5950,6 +6022,34 @@ def _render_speaking_detail_dialog(engagement_id):
         f"📅 {fmt_date(eng.get('engagement_date'))}"
     )
 
+    # ---- Prep Brief ----
+    with st.expander("📋 Prep Brief", expanded=False):
+        if st.button(
+            "Generate Brief",
+            key=f"speak_brief_gen_{engagement_id}",
+            use_container_width=True,
+        ):
+            brief_html = brief_generator.generate_speaking_brief_html(
+                engagement_id
+            )
+            st.session_state[f"speak_brief_html_{engagement_id}"] = brief_html
+            st.rerun()
+
+        brief_html = st.session_state.get(
+            f"speak_brief_html_{engagement_id}"
+        )
+        if brief_html:
+            _render_brief_panel(
+                container_key=f"speak_brief_{engagement_id}",
+                brief_html=brief_html,
+                default_filename=f"speaking_brief_{engagement_id}.html",
+            )
+        else:
+            st.caption(
+                "Click **Generate Brief** to build a prep document with "
+                "deliverables, CFP status, and logistics."
+            )
+
     # ================================================
     # SECTION: Edit Engagement
     # ================================================
@@ -6640,6 +6740,30 @@ def _render_meeting_detail_dialog(meeting_id):
         f"**{meeting.get('executive_name') or '—'}** · "
         f"{_meeting_status_label(meeting.get('status') or 'draft')}"
     )
+
+    # ---- Prep Brief ----
+    with st.expander("📋 Prep Brief", expanded=False):
+        if st.button(
+            "Generate Brief",
+            key=f"mtg_brief_gen_{meeting_id}",
+            use_container_width=True,
+        ):
+            brief_html = brief_generator.generate_meeting_brief_html(meeting_id)
+            st.session_state[f"mtg_brief_html_{meeting_id}"] = brief_html
+            st.rerun()
+
+        brief_html = st.session_state.get(f"mtg_brief_html_{meeting_id}")
+        if brief_html:
+            _render_brief_panel(
+                container_key=f"mtg_brief_{meeting_id}",
+                brief_html=brief_html,
+                default_filename=f"meeting_brief_{meeting_id}.html",
+            )
+        else:
+            st.caption(
+                "Click **Generate Brief** to build a prep document with "
+                "attendees, agenda, context, and action items."
+            )
 
     # ================================================
     # SECTION: Edit Meeting
@@ -8275,6 +8399,123 @@ with tab_vendors:
 
 with tab_dashboard:
     st.header("🏠 Dashboard")
+
+    # ================================================
+    # TODAY AT A GLANCE
+    # ================================================
+    today_iso = datetime.now().date().isoformat()
+
+    # Gather everything for today
+    todays_meetings_glance = db.get_meetings(
+        start_date=today_iso, end_date=today_iso,
+    )
+    todays_events_glance = db.get_events(
+        start_date=today_iso, end_date=today_iso,
+    )
+    todays_speaking_glance = db.get_speaking_engagements(
+        start_date=today_iso, end_date=today_iso,
+    )
+    actions_due_glance = db.get_action_items_due(
+        start_date=today_iso, end_date=today_iso,
+    )
+    overdue_followups_glance = [
+        c for c in db.get_next_actions_due()
+        if c.get("next_action_date")
+        and c["next_action_date"] < today_iso
+    ]
+
+    total_today = (
+        len(todays_meetings_glance)
+        + len(todays_events_glance)
+        + len(todays_speaking_glance)
+    )
+
+    st.markdown(f"### 📌 Today — {datetime.now().strftime('%A, %d %b %Y')}")
+
+    col_a, col_b, col_c, col_d = st.columns(4)
+    with col_a:
+        st.metric("📅 Meetings", len(todays_meetings_glance))
+    with col_b:
+        st.metric("🎉 Events", len(todays_events_glance))
+    with col_c:
+        st.metric("🎤 Speaking", len(todays_speaking_glance))
+    with col_d:
+        st.metric(
+            "⚠️ Overdue Follow-ups",
+            len(overdue_followups_glance),
+            delta=(
+                f"{len(actions_due_glance)} due today"
+                if actions_due_glance else None
+            ),
+        )
+
+    if total_today > 0:
+        with st.expander(
+            f"📅 Today's Schedule ({total_today} item(s))",
+            expanded=True,
+        ):
+            all_today = []
+            for m in todays_meetings_glance:
+                all_today.append({
+                    "kind": "meeting",
+                    "icon": "📅",
+                    "id": m["id"],
+                    "title": m.get("title") or "—",
+                    "time": m.get("meeting_time") or "",
+                    "exec": m.get("executive_name") or "—",
+                    "status": m.get("status"),
+                })
+            for ev in todays_events_glance:
+                all_today.append({
+                    "kind": "event",
+                    "icon": "🎉",
+                    "id": ev["id"],
+                    "title": ev.get("name") or "—",
+                    "time": ev.get("start_time") or "",
+                    "exec": ev.get("executive_name") or "—",
+                    "status": ev.get("status"),
+                })
+            for sp in todays_speaking_glance:
+                all_today.append({
+                    "kind": "speaking",
+                    "icon": "🎤",
+                    "id": sp["id"],
+                    "title": sp.get("title") or "—",
+                    "time": sp.get("engagement_time") or "",
+                    "exec": sp.get("executive_name") or "—",
+                    "status": sp.get("status"),
+                })
+            all_today.sort(key=lambda x: x.get("time") or "99:99")
+
+            dialog_keys = {
+                "meeting": "dialog_meeting_id",
+                "event": "dialog_event_id",
+                "speaking": "dialog_speaking_id",
+            }
+            for item in all_today:
+                col1, col2 = st.columns([5, 1])
+                with col1:
+                    time_part = f" · {item['time']}" if item["time"] else ""
+                    st.markdown(
+                        f"{item['icon']} **{item['title']}**{time_part}"
+                    )
+                    st.caption(f"👤 {item['exec']}")
+                with col2:
+                    if st.button(
+                        "Open",
+                        key=f"glance_open_{item['kind']}_{item['id']}",
+                    ):
+                        st.session_state[
+                            dialog_keys[item["kind"]]
+                        ] = item["id"]
+                        st.rerun()
+    else:
+        st.caption("No meetings, events, or engagements scheduled today.")
+
+    st.divider()
+    # ================================================
+    # END TODAY AT A GLANCE
+    # ================================================
 
     # ================================================
     # UNIFIED TIMELINE (next 14 days)
