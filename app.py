@@ -8898,19 +8898,20 @@ with _dir_subtabs[2]:
 
             st.divider()
 
+
 # =========================================================
 # TAB: DASHBOARD
 # =========================================================
 
 with tab_dashboard:
-    st.header("🏠 Dashboard")
-
-    # ================================================
-    # TODAY AT A GLANCE
-    # ================================================
     today_iso = datetime.now().date().isoformat()
+    week_end_iso = (datetime.now().date() + timedelta(days=7)).isoformat()
 
-    # Gather everything for today
+    st.markdown(f"### 📌 Today — {datetime.now().strftime('%A, %d %b %Y')}")
+
+    # ================================================
+    # TOP METRICS — one row, one glance
+    # ================================================
     todays_meetings_glance = db.get_meetings(
         start_date=today_iso, end_date=today_iso,
     )
@@ -8925,19 +8926,28 @@ with tab_dashboard:
     )
     overdue_followups_glance = [
         c for c in db.get_next_actions_due()
-        if c.get("next_action_date")
-        and c["next_action_date"] < today_iso
+        if c.get("next_action_date") and c["next_action_date"] < today_iso
     ]
 
-    total_today = (
-        len(todays_meetings_glance)
-        + len(todays_events_glance)
-        + len(todays_speaking_glance)
-    )
+    # TickTick counts (only if connected)
+    ticktick_tasks_all = []
+    ticktick_due_soon = []
+    ticktick_overdue = []
+    tt_connected = ticktick_sync.is_connected()
+    if tt_connected:
+        try:
+            ticktick_tasks_all = db.get_ticktick_tasks_filtered(open_only=True)
+            ticktick_due_soon = db.get_ticktick_tasks_due_soon(days=7)
+            ticktick_overdue = [
+                t for t in ticktick_tasks_all
+                if t.get("due_date") and t["due_date"] < today_iso
+            ]
+        except Exception:
+            pass
 
-    st.markdown(f"### 📌 Today — {datetime.now().strftime('%A, %d %b %Y')}")
+    total_overdue = len(overdue_followups_glance) + len(ticktick_overdue)
 
-    col_a, col_b, col_c, col_d = st.columns(4)
+    col_a, col_b, col_c, col_d, col_e, col_f = st.columns(6)
     with col_a:
         st.metric("📅 Meetings", len(todays_meetings_glance))
     with col_b:
@@ -8945,14 +8955,20 @@ with tab_dashboard:
     with col_c:
         st.metric("🎤 Speaking", len(todays_speaking_glance))
     with col_d:
-        st.metric(
-            "⚠️ Overdue Follow-ups",
-            len(overdue_followups_glance),
-            delta=(
-                f"{len(actions_due_glance)} due today"
-                if actions_due_glance else None
-            ),
-        )
+        st.metric("✅ Tasks", len(ticktick_tasks_all))
+    with col_e:
+        st.metric("⚠️ Overdue", total_overdue)
+    with col_f:
+        st.metric("📞 Follow-ups", len(actions_due_glance))
+
+    # ================================================
+    # TODAY'S SCHEDULE
+    # ================================================
+    total_today = (
+        len(todays_meetings_glance)
+        + len(todays_events_glance)
+        + len(todays_speaking_glance)
+    )
 
     if total_today > 0:
         with st.expander(
@@ -8962,33 +8978,24 @@ with tab_dashboard:
             all_today = []
             for m in todays_meetings_glance:
                 all_today.append({
-                    "kind": "meeting",
-                    "icon": "📅",
-                    "id": m["id"],
+                    "kind": "meeting", "icon": "📅", "id": m["id"],
                     "title": m.get("title") or "—",
                     "time": m.get("meeting_time") or "",
                     "exec": m.get("executive_name") or "—",
-                    "status": m.get("status"),
                 })
             for ev in todays_events_glance:
                 all_today.append({
-                    "kind": "event",
-                    "icon": "🎉",
-                    "id": ev["id"],
+                    "kind": "event", "icon": "🎉", "id": ev["id"],
                     "title": ev.get("name") or "—",
                     "time": ev.get("start_time") or "",
                     "exec": ev.get("executive_name") or "—",
-                    "status": ev.get("status"),
                 })
             for sp in todays_speaking_glance:
                 all_today.append({
-                    "kind": "speaking",
-                    "icon": "🎤",
-                    "id": sp["id"],
+                    "kind": "speaking", "icon": "🎤", "id": sp["id"],
                     "title": sp.get("title") or "—",
                     "time": sp.get("engagement_time") or "",
                     "exec": sp.get("executive_name") or "—",
-                    "status": sp.get("status"),
                 })
             all_today.sort(key=lambda x: x.get("time") or "99:99")
 
@@ -9010,150 +9017,123 @@ with tab_dashboard:
                         "Open",
                         key=f"glance_open_{item['kind']}_{item['id']}",
                     ):
-                        st.session_state[
-                            dialog_keys[item["kind"]]
-                        ] = item["id"]
+                        st.session_state[dialog_keys[item["kind"]]] = item["id"]
                         st.rerun()
     else:
         st.caption("No meetings, events, or engagements scheduled today.")
 
     st.divider()
-    # ================================================
-    # END TODAY AT A GLANCE
-    # ================================================
 
     # ================================================
-    # TICKTICK TASKS
+    # NEEDS ATTENTION — grouped alerts
     # ================================================
-    if ticktick_sync.is_connected():
-        tt_ok = True
-        ticktick_tasks_all = []
-        ticktick_due_soon = []
-        ticktick_overdue = []
+    st.markdown("### ⚠️ Needs Attention")
 
-        try:
-            execs_for_tt_filter = db.get_all_executives(active_only=True)
-            tt_exec_options = {"All executives": None}
-            tt_exec_options.update({e["name"]: e["id"] for e in execs_for_tt_filter})
-            tt_exec_label = st.selectbox(
-                "TickTick — filter by executive",
-                options=list(tt_exec_options.keys()),
-                key="tt_dash_exec_filter",
-            )
-            tt_exec_id_filter = tt_exec_options[tt_exec_label]
+    # Gather all alert categories
+    awaiting_meetings = db.get_meetings(awaiting_response=True)
+    overdue_rsvp_events = db.get_events_with_overdue_rsvps(days_ahead=14)
+    payments_due = db.get_payments_due(
+        start_date=today_iso, end_date=week_end_iso,
+    )
+    unsigned_contracts = db.get_unsigned_contracts_within_days(days=7)
+    over_budget_events = db.get_events_over_budget(threshold=0.9)
+    deliverables_due = db.get_deliverables_due(
+        start_date=today_iso, end_date=week_end_iso,
+    )
+    cfps_closing = db.get_cfps_closing_within_days(days=14)
+    thankyous_overdue = db.get_thank_yous_overdue(days_since_delivery=7)
+    meetings_without_notes = db.get_meetings(without_notes=True)
 
-            ticktick_tasks_all = db.get_ticktick_tasks_filtered(
-                exec_id=tt_exec_id_filter, open_only=True
-            )
-            ticktick_due_soon = [
-                t
-                for t in db.get_ticktick_tasks_due_soon(days=7)
-                if tt_exec_id_filter is None
-                or db.resolve_ticktick_task_executive(t)[0] == tt_exec_id_filter
-            ]
-            ticktick_overdue = [
-                t
-                for t in ticktick_tasks_all
-                if t.get("due_date") and t["due_date"] < today_iso
-            ]
-        except Exception as e:
-            tt_ok = False
-            st.warning(
-                f"⚠️ Could not load TickTick data: {e}. "
-                "Sync or reconnect from the sidebar."
-            )
+    alerts = [
+        ("🔴 Overdue Follow-ups", overdue_followups_glance, "comm_overdue"),
+        ("⏳ Meetings Awaiting Response", awaiting_meetings, "mtg_awaiting"),
+        ("✅ Action Items Due (7d)", actions_due_glance, "action_due"),
+        ("⏳ Overdue RSVPs", overdue_rsvp_events, "ev_rsvp"),
+        ("💳 Payments Due (7d)", payments_due, "pay_due"),
+        ("✍️ Unsigned Contracts (7d)", unsigned_contracts, "contract"),
+        ("💰 Events Over 90% Budget", over_budget_events, "over_budget"),
+        ("📦 Deliverables Due (7d)", deliverables_due, "deliv_due"),
+        ("📤 CFPs Closing (14d)", cfps_closing, "cfp_closing"),
+        ("📮 Thank-Yous Overdue", thankyous_overdue, "thankyou"),
+        ("📝 Meetings Without Notes", meetings_without_notes, "no_notes"),
+    ]
 
-        if tt_ok:
-            with st.expander(
-                f"✅ TickTick — {len(ticktick_tasks_all)} open task(s)",
-                expanded=False,
-            ):
-                col_a, col_b, col_c = st.columns(3)
-                with col_a:
-                    st.metric("Open", len(ticktick_tasks_all))
-                with col_b:
-                    st.metric("Due (7d)", len(ticktick_due_soon))
-                with col_c:
-                    st.metric("Overdue", len(ticktick_overdue))
+    total_alerts = sum(len(items) for _, items, _ in alerts)
+    if total_alerts == 0:
+        st.success("✅ Nothing needs attention right now.")
+    else:
+        for label, items, key in alerts:
+            if not items:
+                continue
+            with st.expander(f"{label} ({len(items)})", expanded=False):
+                # Render each item with a link back to its dialog
+                for item in items[:15]:
+                    title = (
+                        item.get("title")
+                        or item.get("name")
+                        or item.get("description")
+                        or item.get("vendor_name")
+                        or item.get("proposal_title")
+                        or "—"
+                    )
+                    # Determine which dialog to open
+                    dialog_target = None
+                    dialog_id = None
+                    if key == "comm_overdue":
+                        dialog_target = "dialog_comm_contact_id"
+                        dialog_id = item.get("id")
+                    elif key in ("mtg_awaiting", "action_due", "no_notes"):
+                        dialog_target = "dialog_meeting_id"
+                        dialog_id = item.get("id") or item.get("meeting_id")
+                    elif key in ("ev_rsvp", "pay_due", "over_budget", "contract"):
+                        dialog_target = "dialog_event_id"
+                        dialog_id = item.get("id") or item.get("event_id")
+                    elif key in ("deliv_due", "cfp_closing", "thankyou"):
+                        dialog_target = "dialog_speaking_id"
+                        dialog_id = item.get("id") or item.get("engagement_id")
 
-                if ticktick_overdue:
-                    st.markdown("**🔴 Overdue**")
-                    for t in ticktick_overdue[:10]:
-                        exec_id_resolved, exec_name_resolved, tag_used = (
-                            db.resolve_ticktick_task_executive(t)
-                        )
-                        col1, col2 = st.columns([5, 1])
-                        with col1:
-                            st.markdown(f"**{t.get('title') or '—'}**")
-                            caption_bits = [f"Due: {t.get('due_date')}"]
-                            if exec_name_resolved:
-                                caption_bits.append(f"👤 {exec_name_resolved}")
-                                if tag_used:
-                                    caption_bits.append(f"`{tag_used}`")
-                            st.caption("  ·  ".join(caption_bits))
-                        with col2:
+                    col1, col2 = st.columns([5, 1])
+                    with col1:
+                        st.markdown(f"**{title}**")
+                        bits = []
+                        if item.get("executive_name"):
+                            bits.append(f"👤 {item['executive_name']}")
+                        if item.get("meeting_date") or item.get("event_date") or item.get("engagement_date") or item.get("due_date"):
+                            d = (
+                                item.get("meeting_date")
+                                or item.get("event_date")
+                                or item.get("engagement_date")
+                                or item.get("due_date")
+                            )
+                            bits.append(f"📅 {fmt_date(d)}")
+                        if item.get("next_action"):
+                            bits.append(item["next_action"])
+                        if item.get("amount"):
+                            bits.append(fmt_money(item["amount"], item.get("currency") or "USD"))
+                        if bits:
+                            st.caption("  ·  ".join(bits))
+                    with col2:
+                        if dialog_target and dialog_id:
                             if st.button(
-                                "✓",
-                                key=f"tt_complete_{t['ticktick_id']}",
-                                help="Mark complete in TickTick",
+                                "Open",
+                                key=f"alert_{key}_{dialog_id}",
                             ):
-                                err = ticktick_sync.complete_task(t["ticktick_id"])
-                                if err:
-                                    st.error(err)
-                                else:
-                                    st.success("Completed.")
-                                    st.rerun()
+                                st.session_state[dialog_target] = dialog_id
+                                st.rerun()
 
-                if ticktick_due_soon:
-                    st.markdown("**⏳ Due This Week**")
-                    for t in ticktick_due_soon[:10]:
-                        exec_id_resolved, exec_name_resolved, tag_used = (
-                            db.resolve_ticktick_task_executive(t)
-                        )
-                        col1, col2 = st.columns([5, 1])
-                        with col1:
-                            st.markdown(f"**{t.get('title') or '—'}**")
-                            caption_bits = [f"Due: {t.get('due_date')}"]
-                            if exec_name_resolved:
-                                caption_bits.append(f"👤 {exec_name_resolved}")
-                                if tag_used:
-                                    caption_bits.append(f"`{tag_used}`")
-                            st.caption("  ·  ".join(caption_bits))
-                        with col2:
-                            if st.button(
-                                "✓",
-                                key=f"tt_complete_week_{t['ticktick_id']}",
-                            ):
-                                err = ticktick_sync.complete_task(t["ticktick_id"])
-                                if err:
-                                    st.error(err)
-                                else:
-                                    st.success("Completed.")
-                                    st.rerun()
-
-                if not ticktick_tasks_all:
-                    st.caption("No open tasks in TickTick.")
-
-        st.divider()
-    # ================================================
-    # END TICKTICK WIDGET
-    # ================================================
+    st.divider()
 
     # ================================================
-    # UNIFIED TIMELINE (next 14 days)
+    # WHAT'S ON — next 14 days (collapsed)
     # ================================================
     timeline_start = datetime.now().date()
     timeline_end = timeline_start + timedelta(days=14)
     timeline_items = db.get_upcoming_activities(
-        timeline_start.isoformat(),
-        timeline_end.isoformat(),
+        timeline_start.isoformat(), timeline_end.isoformat(),
     )
     timeline_trips = db.get_upcoming_trips(
-        timeline_start.isoformat(),
-        timeline_end.isoformat(),
+        timeline_start.isoformat(), timeline_end.isoformat(),
     )
-
-    # Merge and group by date
     all_timeline = timeline_items + timeline_trips
     all_timeline.sort(
         key=lambda x: (
@@ -9164,53 +9144,41 @@ with tab_dashboard:
 
     with st.expander(
         f"📆 What's On (next 14 days) — {len(all_timeline)} item(s)",
-        expanded=bool(all_timeline),
+        expanded=False,
     ):
         if not all_timeline:
             st.caption("Nothing scheduled in the next two weeks.")
         else:
-            # Group by date
             by_date = {}
             for item in all_timeline:
-                d = item.get("date") or "Unknown"
-                by_date.setdefault(d, []).append(item)
+                by_date.setdefault(item.get("date") or "Unknown", []).append(item)
 
             for d, items in by_date.items():
                 try:
-                    nice_date = datetime.fromisoformat(d).strftime(
-                        "%A, %d %b %Y"
-                    )
+                    nice_date = datetime.fromisoformat(d).strftime("%A, %d %b %Y")
                 except Exception:
                     nice_date = d
                 st.markdown(f"**{nice_date}**")
                 for item in items:
                     kind = item.get("kind")
                     kind_icon = {
-                        "meeting": "📅",
-                        "event": "🎉",
-                        "speaking": "🎤",
-                        "trip": "✈️",
+                        "meeting": "📅", "event": "🎉",
+                        "speaking": "🎤", "trip": "✈️",
                     }.get(kind, "•")
                     time_str = item.get("time") or ""
                     time_part = f"  ·  {time_str}" if time_str else ""
-                    exec_name = item.get("executive_name") or "—"
                     st.markdown(
-                        f"{kind_icon}  {item.get('title') or '—'}"
-                        f"{time_part}"
+                        f"{kind_icon}  {item.get('title') or '—'}{time_part}"
                     )
+                    exec_name = item.get("executive_name") or "—"
                     extra = item.get("extra") or ""
                     caption_bits = [f"👤 {exec_name}"]
                     if extra:
                         caption_bits.append(f"📍 {extra}")
-                    if kind == "trip" and item.get("status"):
-                        caption_bits.append(item["status"])
                     st.caption("  ·  ".join(caption_bits))
                 st.divider()
 
     st.divider()
-    # ================================================
-    # END UNIFIED TIMELINE
-    # ================================================
 
     # ================================================
     # GLOBAL SEARCH
@@ -9253,679 +9221,231 @@ with tab_dashboard:
                                 st.session_state[dialog_key] = r["id"]
                                 st.rerun()
                             elif kind == "trips":
-                                # Open trip edit modal
                                 st.session_state["dialog_trip_id"] = r["id"]
                                 st.rerun()
 
     st.divider()
-    # ================================================
-    # END GLOBAL SEARCH
-    # ================================================
 
     # ================================================
-    # MEETINGS WIDGETS
+    # TICKTICK WIDGET (collapsed)
     # ================================================
-    today_iso = datetime.now().date().isoformat()
-    week_end_iso = (datetime.now().date() + timedelta(days=7)).isoformat()
-
-    todays_meetings = db.get_meetings(
-        start_date=today_iso,
-        end_date=today_iso,
-    )
-    awaiting_meetings = db.get_meetings(awaiting_response=True)
-    no_notes_meetings = db.get_meetings(without_notes=True)
-    actions_due = db.get_action_items_due(
-        start_date=today_iso,
-        end_date=week_end_iso,
-    )
-
-    col_a, col_b, col_c, col_d = st.columns(4)
-    with col_a:
-        st.metric("📅 Today's Meetings", len(todays_meetings))
-    with col_b:
-        st.metric("⏳ Awaiting Response", len(awaiting_meetings))
-    with col_c:
-        st.metric("⚠️ Without Notes", len(no_notes_meetings))
-    with col_d:
-        st.metric("✅ Action Items Due (7d)", len(actions_due))
-
-    # ---- Expanded widgets ----
-    with st.expander("📅 Today's Meetings", expanded=bool(todays_meetings)):
-        if not todays_meetings:
-            st.caption("No meetings today.")
-        else:
-            for m in todays_meetings:
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    st.markdown(f"**{m['title']}**")
-                    st.caption(
-                        f"👤 {m.get('executive_name') or '—'}  ·  "
-                        f"🕐 {m.get('meeting_time') or '—'}  ·  "
-                        f"{_meeting_status_label(m.get('status') or 'draft')}"
-                    )
-                with col2:
-                    if st.button("Open", key=f"dash_mtg_open_{m['id']}"):
-                        st.session_state["dialog_meeting_id"] = m["id"]
-                        st.rerun()
-
-    with st.expander("⏳ Meetings Awaiting Response", expanded=False):
-        if not awaiting_meetings:
-            st.caption("Nothing pending.")
-        else:
-            for m in awaiting_meetings:
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    st.markdown(f"**{m['title']}**")
-                    st.caption(
-                        f"👤 {m.get('executive_name') or '—'}  ·  "
-                        f"📅 {fmt_date(m.get('meeting_date'))}  ·  "
-                        f"{_meeting_status_label(m.get('status') or 'draft')}"
-                    )
-                with col2:
-                    if st.button("Open", key=f"dash_mtg_awaiting_open_{m['id']}"):
-                        st.session_state["dialog_meeting_id"] = m["id"]
-                        st.rerun()
-
-    with st.expander("✅ Action Items Due (next 7 days)", expanded=bool(actions_due)):
-        if not actions_due:
-            st.caption("Nothing due.")
-        else:
-            for item in actions_due:
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    st.markdown(f"**{item['description']}**")
-                    owner = (
-                        item.get("owner_contact_name")
-                        or item.get("owner_exec_name")
-                        or "—"
-                    )
-                    st.caption(
-                        f"📅 {fmt_date(item.get('due_date'))}  ·  "
-                        f"👤 {owner}  ·  "
-                        f"from *{item.get('meeting_title')}*"
-                    )
-                with col2:
-                    if st.button(
-                        "Open",
-                        key=f"dash_action_open_{item['id']}",
-                    ):
-                        st.session_state["dialog_meeting_id"] = item["meeting_id"]
-                        st.rerun()
-
-    st.divider()
-    # ================================================
-    # END MEETINGS WIDGETS
-    # ================================================
-
-    # ================================================
-    # COMMUNICATIONS WIDGETS
-    # ================================================
-    next_actions_this_week = db.get_next_actions_due(
-        start_date=today_iso, end_date=week_end_iso,
-    )
-    next_actions_overdue = [
-        c for c in db.get_next_actions_due()
-        if c.get("next_action_date")
-        and c["next_action_date"] < today_iso
-    ]
-    gone_quiet_widget = db.get_contacts_gone_quiet(days=60)
-
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        st.metric("📞 Next Actions (7d)", len(next_actions_this_week))
-    with col_b:
-        st.metric("🔴 Overdue Follow-ups", len(next_actions_overdue))
-    with col_c:
-        st.metric("💤 Gone Quiet (60d+)", len(gone_quiet_widget))
-
-    with st.expander(
-        "🔴 Overdue Follow-ups", expanded=bool(next_actions_overdue)
-    ):
-        if not next_actions_overdue:
-            st.caption("None overdue.")
-        else:
-            for c in next_actions_overdue[:10]:
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    st.markdown(f"**{c['name']}** — {c['next_action']}")
-                    st.caption(
-                        f"Due: {c.get('next_action_date') or '—'}"
-                    )
-                with col2:
-                    if st.button(
-                        "Open",
-                        key=f"dash_comm_overdue_{c['id']}",
-                    ):
-                        st.session_state[
-                            "dialog_comm_contact_id"
-                        ] = c["id"]
-                        st.rerun()
-
-    with st.expander(
-        "📞 Next Actions This Week", expanded=False
-    ):
-        if not next_actions_this_week:
-            st.caption("Nothing due this week.")
-        else:
-            for c in next_actions_this_week:
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    st.markdown(f"**{c['name']}** — {c['next_action']}")
-                    st.caption(
-                        f"Due: {c.get('next_action_date') or '—'}"
-                    )
-                with col2:
-                    if st.button(
-                        "Open",
-                        key=f"dash_comm_week_{c['id']}",
-                    ):
-                        st.session_state[
-                            "dialog_comm_contact_id"
-                        ] = c["id"]
-                        st.rerun()
-
-    st.divider()
-    # ================================================
-    # END COMMUNICATIONS WIDGETS
-    # ================================================
-
-    # ================================================
-    # EVENTS WIDGETS
-    # ================================================
-    upcoming_30 = db.get_events(
-        upcoming_only=True,
-        end_date=(
-            datetime.now().date() + timedelta(days=30)
-        ).isoformat(),
-        status=["planning", "confirmed", "in_progress", "day_of"],
-    )
-    overdue_rsvp_events = db.get_events_with_overdue_rsvps(days_ahead=14)
-    upcoming_90 = db.get_events(
-        upcoming_only=True,
-        end_date=(
-            datetime.now().date() + timedelta(days=90)
-        ).isoformat(),
-        status=["planning", "confirmed", "in_progress", "day_of"],
-    )
-
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        st.metric("🎉 Events (30d)", len(upcoming_30))
-    with col_b:
-        st.metric("⏳ Overdue RSVPs", len(overdue_rsvp_events))
-    with col_c:
-        st.metric("📅 Events (90d)", len(upcoming_90))
-
-    with st.expander(
-        "🎉 Upcoming Events (30 days)",
-        expanded=bool(upcoming_30),
-    ):
-        if not upcoming_30:
-            st.caption("No upcoming events.")
-        else:
-            for ev in upcoming_30:
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    st.markdown(f"**{ev['name']}**")
-                    st.caption(
-                        f"👤 {ev.get('executive_name') or '—'}  ·  "
-                        f"📅 {fmt_date(ev.get('event_date'))}  ·  "
-                        f"{_event_status_label(ev.get('status'))}"
-                    )
-                with col2:
-                    if st.button(
-                        "Open", key=f"dash_ev_open_{ev['id']}"
-                    ):
-                        st.session_state["dialog_event_id"] = ev["id"]
-                        st.rerun()
-
-    with st.expander(
-        "⏳ Overdue RSVPs",
-        expanded=bool(overdue_rsvp_events),
-    ):
-        if not overdue_rsvp_events:
-            st.caption("No pending RSVPs for upcoming events.")
-        else:
-            for ev in overdue_rsvp_events:
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    st.markdown(f"**{ev['name']}**")
-                    st.caption(
-                        f"📅 {fmt_date(ev.get('event_date'))}  ·  "
-                        f"⏳ {ev.get('pending_count', 0)} pending"
-                    )
-                with col2:
-                    if st.button(
-                        "Open",
-                        key=f"dash_ev_rsvp_open_{ev['id']}",
-                    ):
-                        st.session_state["dialog_event_id"] = ev["id"]
-                        st.rerun()
-
-    st.divider()
-    # ================================================
-    # END EVENTS WIDGETS
-    # ================================================
-
-    # ================================================
-    # VENDOR & BUDGET WIDGETS
-    # ================================================
-    payments_due = db.get_payments_due(
-        start_date=today_iso, end_date=week_end_iso,
-    )
-    over_budget_events = db.get_events_over_budget(threshold=0.9)
-    unsigned_contracts = db.get_unsigned_contracts_within_days(days=7)
-
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        st.metric("💳 Payments Due (7d)", len(payments_due))
-    with col_b:
-        st.metric("💰 Events Over 90%", len(over_budget_events))
-    with col_c:
-        st.metric("✍️ Unsigned Contracts", len(unsigned_contracts))
-
-    with st.expander(
-        "💳 Payments Due (next 7 days)", expanded=bool(payments_due)
-    ):
-        if not payments_due:
-            st.caption("No payments due.")
-        else:
-            for p in payments_due:
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    st.markdown(
-                        f"**{p['vendor_name']}** — "
-                        f"{fmt_money(p.get('amount') or 0, p.get('currency') or 'USD')}"
-                    )
-                    st.caption(
-                        f"📅 {fmt_date(p.get('due_date'))}  ·  "
-                        f"from *{p['event_name']}*"
-                    )
-                with col2:
-                    if st.button(
-                        "Open",
-                        key=f"dash_pay_open_{p['id']}",
-                    ):
-                        st.session_state["dialog_event_id"] = p["event_id"]
-                        st.rerun()
-
-    with st.expander(
-        "💰 Events Over 90% Budget",
-        expanded=bool(over_budget_events),
-    ):
-        if not over_budget_events:
-            st.caption("All events within budget.")
-        else:
-            for ev in over_budget_events:
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    st.markdown(f"**{ev['name']}**")
-                    ratio = (
-                        ev["spent_actual"] / ev["budget_total"]
-                        if ev["budget_total"] else 0
-                    )
-                    st.caption(
-                        f"📅 {fmt_date(ev.get('event_date'))}  ·  "
-                        f"{ratio*100:.0f}% of "
-                        f"{fmt_money(ev['budget_total'], ev.get('currency') or 'USD')}"
-                    )
-                with col2:
-                    if st.button(
-                        "Open",
-                        key=f"dash_ob_open_{ev['id']}",
-                    ):
-                        st.session_state["dialog_event_id"] = ev["id"]
-                        st.rerun()
-
-    with st.expander(
-        "✍️ Unsigned Contracts (7 days)",
-        expanded=bool(unsigned_contracts),
-    ):
-        if not unsigned_contracts:
-            st.caption("No unsigned contracts coming up.")
-        else:
-            for c in unsigned_contracts:
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    st.markdown(f"**{c['vendor_name']}**")
-                    st.caption(
-                        f"Event: {c['event_name']}  ·  "
-                        f"📅 {fmt_date(c.get('event_date'))}"
-                    )
-                with col2:
-                    if st.button(
-                        "Open",
-                        key=f"dash_uc_open_{c['id']}",
-                    ):
-                        st.session_state["dialog_event_id"] = c["event_id"]
-                        st.rerun()
-
-    st.divider()
-    # ================================================
-    # END VENDOR & BUDGET WIDGETS
-    # ================================================
-
-    # ================================================
-    # SPEAKING ENGAGEMENT WIDGETS
-    # ================================================
-    today_iso_speak = today_iso
-    week_end_iso_speak = week_end_iso
-
-    upcoming_speak_30 = db.get_speaking_engagements(
-        upcoming_only=True,
-        end_date=(
-            datetime.now().date() + timedelta(days=30)
-        ).isoformat(),
-    )
-    deliverables_due = db.get_deliverables_due(
-        start_date=today_iso_speak, end_date=week_end_iso_speak,
-    )
-    cfps_closing = db.get_cfps_closing_within_days(days=14)
-    pipeline_value = db.get_speaking_pipeline_value()
-    thankyous_overdue = db.get_thank_yous_overdue(days_since_delivery=7)
-
-    col_a, col_b, col_c, col_d = st.columns(4)
-    with col_a:
-        st.metric("🎤 Upcoming (30d)", len(upcoming_speak_30))
-    with col_b:
-        st.metric("📦 Deliverables Due (7d)", len(deliverables_due))
-    with col_c:
-        st.metric("📤 CFPs Closing (14d)", len(cfps_closing))
-    with col_d:
-        st.metric(
-            "💰 Confirmed Value",
-            fmt_money(pipeline_value, "USD"),
-        )
-
-    with st.expander(
-        "🎤 Upcoming Engagements (30 days)",
-        expanded=bool(upcoming_speak_30),
-    ):
-        if not upcoming_speak_30:
-            st.caption("No upcoming engagements.")
-        else:
-            for eng in upcoming_speak_30:
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    st.markdown(f"**{eng['title']}**")
-                    st.caption(
-                        f"👤 {eng.get('executive_name') or '—'}  ·  "
-                        f"📅 {fmt_date(eng.get('engagement_date'))}  ·  "
-                        f"{_speaking_status_label(eng.get('status'))}"
-                    )
-                with col2:
-                    if st.button(
-                        "Open",
-                        key=f"dash_speak_open_{eng['id']}",
-                    ):
-                        st.session_state["dialog_speaking_id"] = eng["id"]
-                        st.rerun()
-
-    with st.expander(
-        "📦 Deliverables Due (7 days)",
-        expanded=bool(deliverables_due),
-    ):
-        if not deliverables_due:
-            st.caption("No deliverables due this week.")
-        else:
-            for d in deliverables_due:
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    st.markdown(f"**{d['name']}**")
-                    st.caption(
-                        f"📅 {fmt_date(d.get('due_date'))}  ·  "
-                        f"from *{d.get('engagement_title')}*"
-                    )
-                with col2:
-                    if st.button(
-                        "Open",
-                        key=f"dash_deliv_open_{d['id']}",
-                    ):
-                        st.session_state["dialog_speaking_id"] = d[
-                            "engagement_id"
-                        ]
-                        st.rerun()
-
-    with st.expander(
-        "📤 CFPs Closing (14 days)",
-        expanded=bool(cfps_closing),
-    ):
-        if not cfps_closing:
-            st.caption("No CFPs closing soon.")
-        else:
-            for cf in cfps_closing:
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    st.markdown(
-                        f"**{cf.get('proposal_title') or 'Untitled'}**"
-                    )
-                    st.caption(
-                        f"📅 Deadline: {fmt_date(cf.get('submission_deadline'))}  ·  "
-                        f"from *{cf.get('engagement_title')}*"
-                    )
-                with col2:
-                    if st.button(
-                        "Open",
-                        key=f"dash_cfp_open_{cf['id']}",
-                    ):
-                        st.session_state["dialog_speaking_id"] = cf[
-                            "engagement_id"
-                        ]
-                        st.rerun()
-
-    with st.expander(
-        "📮 Thank-Yous Overdue",
-        expanded=bool(thankyous_overdue),
-    ):
-        if not thankyous_overdue:
-            st.caption("All thank-yous sent.")
-        else:
-            for eng in thankyous_overdue:
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    st.markdown(f"**{eng['title']}**")
-                    st.caption(
-                        f"📅 {fmt_date(eng.get('engagement_date'))}  ·  "
-                        f"👤 {eng.get('executive_name') or '—'}"
-                    )
-                with col2:
-                    if st.button(
-                        "Open",
-                        key=f"dash_ty_open_{eng['id']}",
-                    ):
-                        st.session_state["dialog_speaking_id"] = eng["id"]
-                        st.rerun()
-
-    st.divider()
-    # ================================================
-    # END SPEAKING ENGAGEMENT WIDGETS
-    # ================================================
-
-    # ---- Load everything once ----
-    all_execs = db.get_all_executives(active_only=False)
-    active_execs = [e for e in all_execs if e.get("is_active", 1)]
-    all_companies = db.get_all_companies(active_only=False)
-    active_companies = [c for c in all_companies if c.get("is_active", 1)]
-    all_contacts = db.get_contacts(active_only=False)
-    active_contacts = [c for c in all_contacts if c.get("is_active", 1)]
-    all_venues = db.get_venues(active_only=False)
-    active_venues = [v for v in all_venues if v.get("is_active", 1)]
-    summaries = db.get_spending_summary()
-
-    today = datetime.now().date()
-
-    upcoming_trips = [t for t in summaries if _trip_is_upcoming(t, today)]
-    active_trips = [t for t in summaries if _trip_is_active(t, today)]
-    past_trips = [t for t in summaries if _trip_is_past(t, today)]
-
-    # ---- Top metric row ----
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric(
-            "Executives",
-            len(active_execs),
-            delta=f"{len(all_execs) - len(active_execs)} inactive"
-            if len(all_execs) > len(active_execs) else None,
-        )
-    with col2:
-        st.metric(
-            "Companies",
-            len(active_companies),
-            delta=f"{len(all_companies) - len(active_companies)} inactive"
-            if len(all_companies) > len(active_companies) else None,
-        )
-    with col3:
-        st.metric("Contacts", len(active_contacts))
-    with col4:
-        st.metric("Total Trips", len(summaries))
-
-    # ---- Second metric row: trip status split ----
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Upcoming (30 days)", len(upcoming_trips))
-    with col2:
-        st.metric("In Progress", len(active_trips))
-    with col3:
-        st.metric("Past Trips", len(past_trips))
-    with col4:
-        # Total spend this calendar month, converted to USD
-        this_month_spend = 0.0
-        for t in summaries:
-            if _trips_in_month(t, today.year, today.month):
-                amt_usd, _ok = _trip_total_in_usd(t)
-                this_month_spend += amt_usd
-        st.metric(
-            f"Spend · {today.strftime('%b %Y')}",
-            fmt_money(this_month_spend, "USD"),
-        )
-
-    st.divider()
-
-    # ---- Upcoming trips table ----
-    st.subheader("📅 Upcoming Trips (next 30 days)")
-    if not upcoming_trips:
-        st.info("No trips scheduled in the next 30 days.")
-    else:
-        for t in sorted(upcoming_trips, key=lambda x: x.get("start_date", "")):
-            col_a, col_b, col_c, col_d, col_e = st.columns([2, 2, 1.5, 1.5, 1])
+    if tt_connected:
+        with st.expander(
+            f"✅ TickTick — {len(ticktick_tasks_all)} open task(s)",
+            expanded=False,
+        ):
+            col_a, col_b, col_c = st.columns(3)
             with col_a:
-                st.write(f"**{t.get('destination', '—')}**")
+                st.metric("Open", len(ticktick_tasks_all))
             with col_b:
-                st.caption(t.get("executive_name", "—"))
+                st.metric("Due (7d)", len(ticktick_due_soon))
             with col_c:
-                st.write(fmt_date(t.get("start_date")))
-            with col_d:
-                st.write(fmt_money(t.get("budget") or 0, t.get("base_currency", "USD")))
-            with col_e:
-                status = t.get("status", "draft")
-                st.caption(
-                    "Draft" if status == "draft"
-                    else "Approved" if status == "approved"
-                    else "Final" if status == "final" else status
-                )
-            st.divider()
+                st.metric("Overdue", len(ticktick_overdue))
 
-    # ---- Spending snapshot ----
-    st.subheader("💰 Spending Snapshot")
-    st.caption(
-        "All figures converted to **USD**. Each trip is converted at its "
-        "own start-date exchange rate, so historical costs stay accurate."
-    )
-    col1, col2, col3 = st.columns(3)
+            if ticktick_overdue:
+                st.markdown("**🔴 Overdue**")
+                for t in ticktick_overdue[:10]:
+                    _, exec_name_resolved, tag_used = (
+                        db.resolve_ticktick_task_executive(t)
+                    )
+                    col1, col2 = st.columns([5, 1])
+                    with col1:
+                        st.markdown(f"**{t.get('title') or '—'}**")
+                        caption_bits = [f"Due: {t.get('due_date')}"]
+                        if exec_name_resolved:
+                            caption_bits.append(f"👤 {exec_name_resolved}")
+                            if tag_used:
+                                caption_bits.append(f"`{tag_used}`")
+                        st.caption("  ·  ".join(caption_bits))
+                    with col2:
+                        if st.button(
+                            "✓",
+                            key=f"tt_complete_{t['ticktick_id']}",
+                        ):
+                            err = ticktick_sync.complete_task(t["ticktick_id"])
+                            if err:
+                                st.error(err)
+                            else:
+                                st.success("Completed.")
+                                st.rerun()
 
-    def _sum_spend(trips):
-        """Sum total_spent across trips, each converted to USD."""
-        total = 0.0
-        failed = 0
-        for t in trips:
-            amt_usd, ok = _trip_total_in_usd(t)
-            total += amt_usd
-            if not ok:
-                failed += 1
-        if failed:
-            st.caption(
-                f"⚠️ {failed} trip(s) had no exchange rate available and "
-                "were included at face value."
-            )
-        return total
+            if ticktick_due_soon:
+                st.markdown("**⏳ Due This Week**")
+                for t in ticktick_due_soon[:10]:
+                    _, exec_name_resolved, tag_used = (
+                        db.resolve_ticktick_task_executive(t)
+                    )
+                    col1, col2 = st.columns([5, 1])
+                    with col1:
+                        st.markdown(f"**{t.get('title') or '—'}**")
+                        caption_bits = [f"Due: {t.get('due_date')}"]
+                        if exec_name_resolved:
+                            caption_bits.append(f"👤 {exec_name_resolved}")
+                            if tag_used:
+                                caption_bits.append(f"`{tag_used}`")
+                        st.caption("  ·  ".join(caption_bits))
+                    with col2:
+                        if st.button(
+                            "✓",
+                            key=f"tt_complete_week_{t['ticktick_id']}",
+                        ):
+                            err = ticktick_sync.complete_task(t["ticktick_id"])
+                            if err:
+                                st.error(err)
+                            else:
+                                st.success("Completed.")
+                                st.rerun()
 
-    month_trips = [t for t in summaries
-                   if _trips_in_month(t, today.year, today.month)]
-    quarter = (today.month - 1) // 3 + 1
-    quarter_trips = [t for t in summaries
-                     if _trips_in_quarter(t, today.year, quarter)]
-    year_trips = [
-        t
-        for t in summaries
-        if any(_trips_in_month(t, today.year, m) for m in range(1, 13))
-    ]
+            if not ticktick_tasks_all:
+                st.caption("No open tasks in TickTick.")
 
-    with col1:
-        st.metric(f"This Month ({today.strftime('%b')})", fmt_money(_sum_spend(month_trips), "USD"))
-    with col2:
-        st.metric(f"Q{quarter} {today.year}", fmt_money(_sum_spend(quarter_trips), "USD"))
-    with col3:
-        st.metric(f"{today.year} YTD", fmt_money(_sum_spend(year_trips), "USD"))
-
-    # ---- Per-executive spend breakdown ----
-    if summaries:
-        st.subheader("👤 Spend by Executive")
-        st.caption("All figures converted to USD at each trip's start-date rate.")
-        by_exec = {}
-        for t in summaries:
-            name = t.get("executive_name", "—")
-            amt_usd, _ok = _trip_total_in_usd(t)
-            by_exec[name] = by_exec.get(name, 0.0) + amt_usd
-        rows = sorted(by_exec.items(), key=lambda kv: -kv[1])
-        for name, total in rows:
-            col_a, col_b = st.columns([3, 2])
-            with col_a:
-                st.write(f"**{name}**")
-            with col_b:
-                st.write(fmt_money(total, "USD"))
         st.divider()
 
-    # ---- Library content counts ----
-    st.subheader("📚 Library Content")
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Guides", len(db.get_destination_guides(active_only=True)))
-        st.metric("Visa Rules", len(db.get_visa_rules(active_only=True)))
-    with col2:
-        st.metric("Checklist Tpls", len(db.get_checklist_templates(active_only=True)))
-        st.metric("Packing Tpls", len(db.get_packing_templates(active_only=True)))
-    with col3:
-        st.metric("Trip Tpls", len(db.get_trip_templates(active_only=True)))
-        st.metric("Hospitals", len(db.get_hospitals(active_only=True)))
-    with col4:
-        st.metric("Embassies", len(db.get_embassies(active_only=True)))
-        st.metric("Venues", len(active_venues))
+    # ================================================
+    # TRAVEL OVERVIEW — collapsed by default
+    # ================================================
+    with st.expander("✈️ Travel Overview", expanded=False):
+        # ---- Load travel data ----
+        all_execs = db.get_all_executives(active_only=False)
+        active_execs = [e for e in all_execs if e.get("is_active", 1)]
+        all_companies = db.get_all_companies(active_only=False)
+        active_companies = [c for c in all_companies if c.get("is_active", 1)]
+        all_contacts = db.get_contacts(active_only=False)
+        active_contacts = [c for c in all_contacts if c.get("is_active", 1)]
+        all_venues = db.get_venues(active_only=False)
+        active_venues = [v for v in all_venues if v.get("is_active", 1)]
+        summaries = db.get_spending_summary()
 
-    st.divider()
+        today = datetime.now().date()
+        upcoming_trips = [t for t in summaries if _trip_is_upcoming(t, today)]
+        active_trips = [t for t in summaries if _trip_is_active(t, today)]
+        past_trips = [t for t in summaries if _trip_is_past(t, today)]
 
-    # ---- Recently created trips ----
-    st.subheader("🕒 Recently Created Trips")
-    recent = sorted(
-        summaries,
-        key=lambda t: t.get("start_date", ""),
-        reverse=True,
-    )[:5]
-    if not recent:
-        st.info("No trips yet.")
-    else:
-        for t in recent:
-            col_a, col_b, col_c = st.columns([2.5, 2, 1.5])
-            with col_a:
-                st.write(f"**{t.get('destination', '—')}**")
-            with col_b:
-                st.caption(t.get("executive_name", "—"))
-            with col_c:
-                st.caption(
-                    f"{fmt_date(t.get('start_date'))} → "
-                    f"{fmt_date(t.get('end_date'))}"
-                )
+        # ---- Top metrics ----
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric(
+                "Executives", len(active_execs),
+                delta=f"{len(all_execs) - len(active_execs)} inactive"
+                if len(all_execs) > len(active_execs) else None,
+            )
+        with col2:
+            st.metric(
+                "Companies", len(active_companies),
+                delta=f"{len(all_companies) - len(active_companies)} inactive"
+                if len(all_companies) > len(active_companies) else None,
+            )
+        with col3:
+            st.metric("Contacts", len(active_contacts))
+        with col4:
+            st.metric("Total Trips", len(summaries))
 
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Upcoming (30d)", len(upcoming_trips))
+        with col2:
+            st.metric("In Progress", len(active_trips))
+        with col3:
+            st.metric("Past Trips", len(past_trips))
+        with col4:
+            this_month_spend = 0.0
+            for t in summaries:
+                if _trips_in_month(t, today.year, today.month):
+                    amt_usd, _ok = _trip_total_in_usd(t)
+                    this_month_spend += amt_usd
+            st.metric(
+                f"Spend · {today.strftime('%b %Y')}",
+                fmt_money(this_month_spend, "USD"),
+            )
 
+        st.divider()
+
+        # ---- Upcoming trips ----
+        st.subheader("📅 Upcoming Trips (next 30 days)")
+        if not upcoming_trips:
+            st.info("No trips scheduled in the next 30 days.")
+        else:
+            for t in sorted(upcoming_trips, key=lambda x: x.get("start_date", "")):
+                col_a, col_b, col_c, col_d, col_e = st.columns([2, 2, 1.5, 1.5, 1])
+                with col_a:
+                    st.write(f"**{t.get('destination', '—')}**")
+                with col_b:
+                    st.caption(t.get("executive_name", "—"))
+                with col_c:
+                    st.write(fmt_date(t.get("start_date")))
+                with col_d:
+                    st.write(fmt_money(t.get("budget") or 0, t.get("base_currency", "USD")))
+                with col_e:
+                    status = t.get("status", "draft")
+                    st.caption(
+                        "Draft" if status == "draft"
+                        else "Approved" if status == "approved"
+                        else "Final" if status == "final" else status
+                    )
+                st.divider()
+
+        # ---- Spending snapshot ----
+        st.subheader("💰 Spending Snapshot")
+        st.caption("All figures converted to USD at each trip's start-date rate.")
+        col1, col2, col3 = st.columns(3)
+
+        def _sum_spend(trips):
+            total = 0.0
+            for t in trips:
+                amt_usd, _ok = _trip_total_in_usd(t)
+                total += amt_usd
+            return total
+
+        month_trips = [t for t in summaries
+                       if _trips_in_month(t, today.year, today.month)]
+        quarter = (today.month - 1) // 3 + 1
+        quarter_trips = [t for t in summaries
+                         if _trips_in_quarter(t, today.year, quarter)]
+        year_trips = [
+            t for t in summaries
+            if any(_trips_in_month(t, today.year, m) for m in range(1, 13))
+        ]
+
+        with col1:
+            st.metric(f"This Month ({today.strftime('%b')})", fmt_money(_sum_spend(month_trips), "USD"))
+        with col2:
+            st.metric(f"Q{quarter} {today.year}", fmt_money(_sum_spend(quarter_trips), "USD"))
+        with col3:
+            st.metric(f"{today.year} YTD", fmt_money(_sum_spend(year_trips), "USD"))
+
+        # ---- Per-executive breakdown ----
+        if summaries:
+            st.subheader("👤 Spend by Executive")
+            by_exec = {}
+            for t in summaries:
+                name = t.get("executive_name", "—")
+                amt_usd, _ok = _trip_total_in_usd(t)
+                by_exec[name] = by_exec.get(name, 0.0) + amt_usd
+            rows = sorted(by_exec.items(), key=lambda kv: -kv[1])
+            for name, total in rows:
+                col_a, col_b = st.columns([3, 2])
+                with col_a:
+                    st.write(f"**{name}**")
+                with col_b:
+                    st.write(fmt_money(total, "USD"))
+            st.divider()
+
+        # ---- Library counts ----
+        st.subheader("📚 Library Content")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Guides", len(db.get_destination_guides(active_only=True)))
+            st.metric("Visa Rules", len(db.get_visa_rules(active_only=True)))
+        with col2:
+            st.metric("Checklist Tpls", len(db.get_checklist_templates(active_only=True)))
+            st.metric("Packing Tpls", len(db.get_packing_templates(active_only=True)))
+        with col3:
+            st.metric("Trip Tpls", len(db.get_trip_templates(active_only=True)))
+            st.metric("Hospitals", len(db.get_hospitals(active_only=True)))
+        with col4:
+            st.metric("Embassies", len(db.get_embassies(active_only=True)))
+            st.metric("Venues", len(active_venues))
+            
 # =========================================================
 # TAB: TRIP PLANNER
 # =========================================================
