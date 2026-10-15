@@ -918,6 +918,17 @@ def init_db():
             FOREIGN KEY (template_id) REFERENCES budget_templates(id) ON DELETE CASCADE
         )""")
 
+        # --- Restore log ---
+        c.execute("""CREATE TABLE IF NOT EXISTS restore_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            performed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            mode TEXT,
+            source_filename TEXT,
+            notes TEXT,
+            success INTEGER DEFAULT 1,
+            error_message TEXT
+        )""")
+
         # --- Indexes for new tables ---
         for idx in [
             "CREATE INDEX IF NOT EXISTS idx_meetings_exec ON meetings(exec_id)",
@@ -955,6 +966,7 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_comms_next_action ON communications(next_action_date)",
             "CREATE INDEX IF NOT EXISTS idx_budget_templates_active ON budget_templates(is_active)",
             "CREATE INDEX IF NOT EXISTS idx_budget_template_items_template ON budget_template_items(template_id)",
+            "CREATE INDEX IF NOT EXISTS idx_restore_log_date ON restore_log(performed_at)",
         ]:
             try:
                 c.execute(idx)
@@ -3145,12 +3157,22 @@ def get_all_rows(table_name):
 
 def export_all_data():
     tables = [
+        # Original travel planner tables
         "companies", "executives", "contacts", "trip_delegation",
         "trips", "itinerary_items", "trip_stops", "trip_templates",
         "categories", "executive_memberships", "executive_passports",
         "item_delegation", "item_contacts", "packing_lists",
         "packing_items", "trip_checklists", "trip_checklist_items",
         "hospitals", "exchange_rates",
+        # EA Command Center tables
+        "meetings", "meeting_attendees", "meeting_action_items",
+        "meeting_decisions",
+        "events", "event_guests", "event_budget_items",
+        "vendors", "vendor_engagements", "vendor_payments",
+        "speaking_engagements", "speaking_deliverables", "speaking_cfps",
+        "communications",
+        "budget_templates", "budget_template_items",
+        "restore_log",
     ]
     return {t: get_all_rows(t) for t in tables}
 
@@ -7210,3 +7232,141 @@ def global_search(query, limit_per_kind=10):
     finally:
         conn.close()
     return results
+
+
+# =========================================================
+# BACKUP & RESTORE
+# =========================================================
+
+import shutil
+
+
+BACKUP_DIR = ".backups"
+BACKUP_KEEP_COUNT = 60
+
+
+def ensure_backup_dir():
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+
+
+def _latest_auto_backup_age_minutes():
+    """Return minutes since the newest auto-backup, or None if none exist."""
+    ensure_backup_dir()
+    files = [
+        os.path.join(BACKUP_DIR, f)
+        for f in os.listdir(BACKUP_DIR)
+        if f.startswith("ea_command_center_") and f.endswith(".db")
+    ]
+    if not files:
+        return None
+    newest = max(files, key=os.path.getmtime)
+    age_seconds = datetime.now().timestamp() - os.path.getmtime(newest)
+    return age_seconds / 60
+
+
+def make_auto_backup():
+    """
+    Copy the current DB to .backups/ with a timestamp.
+    Returns the path of the new backup, or None on failure.
+    """
+    if not os.path.exists(DB_PATH):
+        return None
+    ensure_backup_dir()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dest = os.path.join(
+        BACKUP_DIR, f"ea_command_center_{timestamp}.db"
+    )
+    try:
+        # Use the SQLite backup API for a consistent copy while
+        # the DB may be in use.
+        src_conn = sqlite3.connect(DB_PATH, timeout=30)
+        dst_conn = sqlite3.connect(dest, timeout=30)
+        try:
+            src_conn.backup(dst_conn)
+        finally:
+            dst_conn.close()
+            src_conn.close()
+        return dest
+    except Exception:
+        try:
+            shutil.copy2(DB_PATH, dest)
+            return dest
+        except Exception:
+            return None
+
+
+def prune_auto_backups(keep=BACKUP_KEEP_COUNT):
+    """Delete the oldest backups beyond `keep`."""
+    ensure_backup_dir()
+    files = [
+        os.path.join(BACKUP_DIR, f)
+        for f in os.listdir(BACKUP_DIR)
+        if f.startswith("ea_command_center_") and f.endswith(".db")
+    ]
+    if len(files) <= keep:
+        return 0
+    files.sort(key=os.path.getmtime)
+    to_delete = files[: len(files) - keep]
+    deleted = 0
+    for f in to_delete:
+        try:
+            os.remove(f)
+            deleted += 1
+        except Exception:
+            pass
+    return deleted
+
+
+def run_auto_backup_if_due(min_age_minutes=60):
+    """
+    Create an auto-backup if the newest is older than `min_age_minutes`.
+    Returns a tuple (made: bool, path: str or None).
+    """
+    age = _latest_auto_backup_age_minutes()
+    if age is not None and age < min_age_minutes:
+        return False, None
+    path = make_auto_backup()
+    if path:
+        prune_auto_backups()
+        return True, path
+    return False, None
+
+
+def get_auto_backup_count():
+    ensure_backup_dir()
+    return len([
+        f for f in os.listdir(BACKUP_DIR)
+        if f.startswith("ea_command_center_") and f.endswith(".db")
+    ])
+
+
+def log_restore(mode, source_filename, notes=None,
+                success=1, error_message=None):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO restore_log
+               (mode, source_filename, notes, success, error_message)
+               VALUES (?, ?, ?, ?, ?)""",
+            (mode, source_filename, notes, success, error_message),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_restore_log(limit=20):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT * FROM restore_log
+               ORDER BY performed_at DESC
+               LIMIT ?""",
+            (limit,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()

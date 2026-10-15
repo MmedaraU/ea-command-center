@@ -13,3 +13,6 @@ ea_weather_cache.json
 docs/screenshots/*.tmp
 *.json
 *.db
+
+.backups/
+ea_command_center.db-journal

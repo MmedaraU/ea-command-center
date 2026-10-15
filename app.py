@@ -11,6 +11,7 @@ import json
 import re
 import pycountry
 import brief_generator
+import mobile_export
 from openpyxl import Workbook
 from excel_export import (
     export_profile_to_excel,
@@ -1395,6 +1396,15 @@ if "upload_counter" not in st.session_state:
 
 st.title("EA Command Center")
 db.init_db()
+db.seed_default_budget_templates()
+
+# Silent auto-backup — runs at most once per hour
+try:
+    _auto_made, _auto_path = db.run_auto_backup_if_due(
+        min_age_minutes=60
+    )
+except Exception:
+    _auto_made, _auto_path = (False, None)
 
 
 # =========================================================
@@ -1406,13 +1416,20 @@ if _should_show_backup_reminder():
     if days_since is None:
         msg = "You haven't backed up the database yet."
     else:
-        msg = f"Last backup was **{days_since} days ago**."
+        msg = f"Last verified backup was **{days_since} days ago**."
+
+    auto_count = db.get_auto_backup_count()
 
     st.warning(
         f"📅 **Monthly backup reminder** — {msg} "
-        "It's the end of the month. Download a copy of your database "
-        "and store it somewhere safe (cloud drive, external disk)."
+        f"It's the end of the month. Download a copy of your database "
+        f"(covering trips, meetings, events, speaking engagements, "
+        f"vendors, budget, and communications) and store it somewhere "
+        f"safe (cloud drive, external disk). "
+        f"ℹ️ {auto_count} automatic local backup(s) exist for crash "
+        f"recovery, but they won't survive a disk failure."
     )
+
 
     col1, col2, col3 = st.columns([1, 1, 3])
     with col1:
@@ -2031,25 +2048,75 @@ with st.sidebar.expander("💾 Import / Restore Database"):
             try:
                 if import_mode == "Replace (Full restore)":
                     if uploaded_file.name.endswith(".db"):
+                        # Backup the current DB before overwriting
+                        pre_path = db.make_auto_backup()
                         with open(db.DB_PATH, "wb") as f:
                             f.write(uploaded_file.getbuffer())
-                        st.success("✅ Database replaced successfully! Refreshing...")
+                        db.log_restore(
+                            mode="replace",
+                            source_filename=uploaded_file.name,
+                            notes=(
+                                f"Pre-restore backup: {pre_path}"
+                                if pre_path else None
+                            ),
+                            success=1,
+                        )
+                        st.success(
+                            "✅ Database replaced successfully! "
+                            "Refreshing..."
+                        )
                         st.rerun()
                     else:
+                        db.log_restore(
+                            mode="replace",
+                            source_filename=uploaded_file.name,
+                            success=0,
+                            error_message="Replace mode requires a .db file.",
+                        )
                         st.warning("Replace mode only accepts .db files.")
                 else:
                     if uploaded_file.name.endswith(".json"):
                         data = json.load(uploaded_file)
                         result = db.merge_database_data(data)
+                        db.log_restore(
+                            mode="merge_json",
+                            source_filename=uploaded_file.name,
+                            notes=result,
+                            success=1,
+                        )
                         st.success(result)
                     elif uploaded_file.name.endswith(".csv"):
-                        content = uploaded_file.getvalue().decode("utf-8").splitlines()
+                        content = (
+                            uploaded_file.getvalue()
+                            .decode("utf-8")
+                            .splitlines()
+                        )
                         reader = csv.DictReader(content)
                         result = db.import_executives_from_csv(reader)
+                        db.log_restore(
+                            mode="merge_csv",
+                            source_filename=uploaded_file.name,
+                            notes=result,
+                            success=1,
+                        )
                         st.success(result)
                     else:
+                        db.log_restore(
+                            mode="merge",
+                            source_filename=uploaded_file.name,
+                            success=0,
+                            error_message=(
+                                "Merge mode requires .json or .csv."
+                            ),
+                        )
                         st.warning("Merge mode accepts .json or .csv files.")
             except Exception as e:
+                db.log_restore(
+                    mode=import_mode,
+                    source_filename=uploaded_file.name,
+                    success=0,
+                    error_message=str(e),
+                )
                 st.error(f"Import failed: {e}")
 
 
@@ -2109,12 +2176,23 @@ with st.sidebar.expander("📤 Export Database", expanded=False):
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
                 tables = [
+                    # Travel planner
                     "companies", "executives", "contacts", "trip_delegation",
                     "trips", "itinerary_items", "trip_stops", "trip_templates",
                     "categories", "executive_memberships", "executive_passports",
                     "item_delegation", "item_contacts", "packing_lists",
                     "packing_items", "trip_checklists", "trip_checklist_items",
                     "hospitals", "exchange_rates",
+                    # EA Command Center
+                    "meetings", "meeting_attendees", "meeting_action_items",
+                    "meeting_decisions",
+                    "events", "event_guests", "event_budget_items",
+                    "vendors", "vendor_engagements", "vendor_payments",
+                    "speaking_engagements", "speaking_deliverables",
+                    "speaking_cfps",
+                    "communications",
+                    "budget_templates", "budget_template_items",
+                    "restore_log",
                 ]
                 for table in tables:
                     rows = db.get_all_rows(table)
@@ -2146,6 +2224,185 @@ with st.sidebar.expander("📤 Export Database", expanded=False):
                 key="export_csv_zip",
             )
 
+    st.divider()
+
+    # ---- Auto-backups info ----
+    st.caption("🤖 **Auto-Backups**")
+    auto_count = db.get_auto_backup_count()
+    age_min = db._latest_auto_backup_age_minutes()
+    if age_min is None:
+        st.caption("No auto-backups yet.")
+    else:
+        st.caption(
+            f"{auto_count} file(s) in `.backups/`  ·  "
+            f"newest {age_min:.0f} min ago"
+        )
+        st.caption(
+            "One runs at most once per hour on app start. "
+            "Last 60 kept. For crash recovery only — "
+            "**not** a substitute for offsite backups."
+        )
+    if st.button(
+        "🔄 Run Auto-Backup Now",
+        key="run_auto_backup_btn",
+        use_container_width=True,
+    ):
+        path = db.make_auto_backup()
+        if path:
+            db.prune_auto_backups()
+            st.success(f"✅ Backup created: {os.path.basename(path)}")
+            st.rerun()
+        else:
+            st.error("Backup failed.")
+
+    st.divider()
+
+    # ---- Restore log ----
+    with st.expander("📜 Restore Log (last 20)"):
+        entries = db.get_restore_log(limit=20)
+        if not entries:
+            st.caption("No restores recorded.")
+        else:
+            for e in entries:
+                status = "✅" if e.get("success") else "❌"
+                st.markdown(
+                    f"{status} **{e.get('mode') or '—'}** "
+                    f"· {fmt_datetime(e.get('performed_at'))}"
+                )
+                if e.get("source_filename"):
+                    st.caption(f"Source: {e['source_filename']}")
+                if e.get("notes"):
+                    st.caption(e["notes"])
+                if e.get("error_message"):
+                    st.caption(f"⚠️ {e['error_message']}")
+                st.divider()
+
+with st.sidebar.expander("📱 Mobile Export", expanded=False):
+    st.caption(
+        "Generate a self-contained HTML file you can open on your phone. "
+        "Read-only. Works offline. Optional AES-256 password encryption."
+    )
+
+    scope = st.radio(
+        "Export scope",
+        options=["Full", "Today only", "This event", "This trip"],
+        key="mobile_export_scope",
+    )
+
+    scope_id = None
+    if scope == "This event":
+        events_for_export = db.get_events()
+        if not events_for_export:
+            st.info("No events to export.")
+        else:
+            ev_options = {
+                f"{e['name']} ({e.get('event_date') or '—'})": e["id"]
+                for e in events_for_export
+            }
+            ev_label = st.selectbox(
+                "Event",
+                options=list(ev_options.keys()),
+                key="mobile_export_event_id",
+            )
+            scope_id = ev_options[ev_label]
+    elif scope == "This trip":
+        trips_for_export = db.get_spending_summary()
+        if not trips_for_export:
+            st.info("No trips to export.")
+        else:
+            tr_options = {
+                f"{t.get('purpose') or t.get('destination')} "
+                f"({t.get('start_date') or '—'})": t["trip_id"]
+                for t in trips_for_export
+            }
+            tr_label = st.selectbox(
+                "Trip",
+                options=list(tr_options.keys()),
+                key="mobile_export_trip_id",
+            )
+            scope_id = tr_options[tr_label]
+
+    # Password
+    mobile_password = st.text_input(
+        "Password (optional)",
+        type="password",
+        key="mobile_export_password",
+        help=(
+            "If set, the export is encrypted with AES-256. "
+            "You'll need to enter it on your phone to view the file."
+        ),
+    )
+
+    if mobile_password and not mobile_export.is_encryption_available():
+        st.warning(
+            "The `cryptography` library isn't installed. "
+            "Run `pip install cryptography` to enable encryption. "
+            "Falling back to plaintext for now."
+        )
+
+    scope_key = {
+        "Full": "full",
+        "Today only": "today",
+        "This event": "event",
+        "This trip": "trip",
+    }[scope]
+
+    if st.button(
+        "📱 Generate Export",
+        key="mobile_export_btn",
+        use_container_width=True,
+    ):
+        if scope_key in ("event", "trip") and scope_id is None:
+            st.error("Pick a specific record first.")
+        else:
+            with st.spinner("Building export…"):
+                html = mobile_export.generate_mobile_export(
+                    scope=scope_key,
+                    scope_id=scope_id,
+                    password=(
+                        mobile_password if mobile_password else None
+                    ),
+                )
+            if html:
+                st.session_state["mobile_export_html"] = html
+                st.session_state["mobile_export_meta"] = {
+                    "scope": scope,
+                    "encrypted": bool(
+                        mobile_password
+                        and mobile_export.is_encryption_available()
+                    ),
+                }
+                st.success("✅ Export ready.")
+            else:
+                st.error("Failed to generate export.")
+
+    if st.session_state.get("mobile_export_html"):
+        meta = st.session_state.get("mobile_export_meta") or {}
+        filename = (
+            f"ea_export_{scope_key}_"
+            f"{datetime.now().strftime('%Y%m%d_%H%M')}.html"
+        )
+        size_kb = len(st.session_state["mobile_export_html"]) / 1024
+        st.caption(
+            f"Ready · {size_kb:.0f} KB · "
+            f"{'🔒 Encrypted' if meta.get('encrypted') else '⚠️ Plaintext'}"
+        )
+        st.download_button(
+            "⬇️ Download HTML",
+            data=st.session_state["mobile_export_html"],
+            file_name=filename,
+            mime="text/html",
+            key="mobile_export_download",
+            use_container_width=True,
+        )
+        if st.button(
+            "🗑️ Clear",
+            key="mobile_export_clear",
+            use_container_width=True,
+        ):
+            st.session_state.pop("mobile_export_html", None)
+            st.session_state.pop("mobile_export_meta", None)
+            st.rerun()
 
 with st.sidebar.expander("💱 Exchange Rates", expanded=False):
     st.caption("Fetch latest rates and store in the database. "
@@ -6029,10 +6286,15 @@ def _render_speaking_detail_dialog(engagement_id):
             key=f"speak_brief_gen_{engagement_id}",
             use_container_width=True,
         ):
-            brief_html = brief_generator.generate_speaking_brief_html(
-                engagement_id
+            st.session_state[f"speak_brief_html_{engagement_id}"] = (
+                brief_generator.generate_speaking_brief_html(engagement_id)
             )
-            st.session_state[f"speak_brief_html_{engagement_id}"] = brief_html
+            st.session_state[f"speak_brief_pdf_{engagement_id}"] = (
+                brief_generator.generate_speaking_brief_pdf(engagement_id)
+            )
+            st.session_state[f"speak_brief_docx_{engagement_id}"] = (
+                brief_generator.generate_speaking_brief_docx(engagement_id)
+            )
             st.rerun()
 
         brief_html = st.session_state.get(
@@ -6042,14 +6304,19 @@ def _render_speaking_detail_dialog(engagement_id):
             _render_brief_panel(
                 container_key=f"speak_brief_{engagement_id}",
                 brief_html=brief_html,
-                default_filename=f"speaking_brief_{engagement_id}.html",
+                brief_pdf=st.session_state.get(
+                    f"speak_brief_pdf_{engagement_id}"
+                ),
+                brief_docx=st.session_state.get(
+                    f"speak_brief_docx_{engagement_id}"
+                ),
+                default_stem=f"speaking_brief_{engagement_id}",
             )
         else:
             st.caption(
                 "Click **Generate Brief** to build a prep document with "
                 "deliverables, CFP status, and logistics."
             )
-
     # ================================================
     # SECTION: Edit Engagement
     # ================================================
