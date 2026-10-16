@@ -7205,7 +7205,9 @@ def get_upcoming_trips(start_date, end_date, exec_id=None):
 def global_search(query, limit_per_kind=10):
     """
     Search across meetings, events, speaking engagements, trips, contacts,
-    and vendors. Returns dict of kind -> list of results.
+    vendors, executives, plus companies, venues, and meeting action items
+    and decisions.
+    Returns dict of kind -> list of results.
     """
     if not query or not query.strip():
         return {}
@@ -7216,65 +7218,88 @@ def global_search(query, limit_per_kind=10):
     try:
         c = conn.cursor()
 
+        # --- Meetings ---
         c.execute(
-            """SELECT id, title, meeting_date AS date, status
-               FROM meetings
-               WHERE LOWER(title) LIKE ?
-                  OR LOWER(COALESCE(agenda,'')) LIKE ?
-                  OR LOWER(COALESCE(notes_native,'')) LIKE ?
-               ORDER BY meeting_date DESC
+            """SELECT m.id, m.title, m.meeting_date AS date, m.status,
+                      e.name AS executive_name
+               FROM meetings m
+               LEFT JOIN executives e ON m.exec_id = e.id
+               WHERE LOWER(m.title) LIKE ?
+                  OR LOWER(COALESCE(m.agenda,'')) LIKE ?
+                  OR LOWER(COALESCE(m.notes_native,'')) LIKE ?
+                  OR LOWER(COALESCE(e.name,'')) LIKE ?
+               ORDER BY m.meeting_date DESC
                LIMIT ?""",
-            (like, like, like, limit_per_kind),
+            (like, like, like, like, limit_per_kind),
         )
         results["meetings"] = [dict(r) for r in c.fetchall()]
 
+        # --- Events ---
         c.execute(
-            """SELECT id, name AS title, event_date AS date, status
-               FROM events
-               WHERE LOWER(name) LIKE ?
-                  OR LOWER(COALESCE(objective,'')) LIKE ?
-                  OR LOWER(COALESCE(notes_native,'')) LIKE ?
-               ORDER BY event_date DESC
+            """SELECT ev.id, ev.name AS title, ev.event_date AS date,
+                      ev.status, e.name AS executive_name
+               FROM events ev
+               LEFT JOIN executives e ON ev.exec_id = e.id
+               WHERE LOWER(ev.name) LIKE ?
+                  OR LOWER(COALESCE(ev.objective,'')) LIKE ?
+                  OR LOWER(COALESCE(ev.notes_native,'')) LIKE ?
+                  OR LOWER(COALESCE(e.name,'')) LIKE ?
+               ORDER BY ev.event_date DESC
                LIMIT ?""",
-            (like, like, like, limit_per_kind),
+            (like, like, like, like, limit_per_kind),
         )
         results["events"] = [dict(r) for r in c.fetchall()]
 
+        # --- Speaking engagements ---
         c.execute(
-            """SELECT id, title, engagement_date AS date, status
-               FROM speaking_engagements
-               WHERE LOWER(title) LIKE ?
-                  OR LOWER(COALESCE(topic,'')) LIKE ?
-                  OR LOWER(COALESCE(organizer_name,'')) LIKE ?
-               ORDER BY engagement_date DESC
+            """SELECT se.id, se.title, se.engagement_date AS date,
+                      se.status, e.name AS executive_name
+               FROM speaking_engagements se
+               LEFT JOIN executives e ON se.exec_id = e.id
+               WHERE LOWER(se.title) LIKE ?
+                  OR LOWER(COALESCE(se.topic,'')) LIKE ?
+                  OR LOWER(COALESCE(se.organizer_name,'')) LIKE ?
+                  OR LOWER(COALESCE(e.name,'')) LIKE ?
+               ORDER BY se.engagement_date DESC
                LIMIT ?""",
-            (like, like, like, limit_per_kind),
+            (like, like, like, like, limit_per_kind),
         )
         results["speaking"] = [dict(r) for r in c.fetchall()]
 
+        # --- Trips ---
         c.execute(
-            """SELECT id, purpose AS title, start_date AS date, status
-               FROM trips
-               WHERE LOWER(purpose) LIKE ?
-                  OR LOWER(destination) LIKE ?
-               ORDER BY start_date DESC
+            """SELECT t.id, t.purpose AS title, t.start_date AS date,
+                      t.status, e.name AS executive_name
+               FROM trips t
+               LEFT JOIN executives e ON t.exec_id = e.id
+               WHERE LOWER(t.purpose) LIKE ?
+                  OR LOWER(t.destination) LIKE ?
+                  OR LOWER(COALESCE(e.name,'')) LIKE ?
+               ORDER BY t.start_date DESC
                LIMIT ?""",
-            (like, like, limit_per_kind),
+            (like, like, like, limit_per_kind),
         )
         results["trips"] = [dict(r) for r in c.fetchall()]
 
+        # --- Contacts ---
         c.execute(
-            """SELECT id, name AS title, email, role, company_id
+            """SELECT id, name AS title, email, role, company_id,
+                      COALESCE(tags,'') AS tags
                FROM contacts
                WHERE LOWER(name) LIKE ?
                   OR LOWER(COALESCE(email,'')) LIKE ?
                   OR LOWER(COALESCE(role,'')) LIKE ?
+                  OR LOWER(COALESCE(tags,'')) LIKE ?
+                  OR LOWER(COALESCE(notes,'')) LIKE ?
+                  OR LOWER(COALESCE(city,'')) LIKE ?
+                  OR LOWER(COALESCE(country,'')) LIKE ?
                ORDER BY name
                LIMIT ?""",
-            (like, like, like, limit_per_kind),
+            (like, like, like, like, like, like, like, limit_per_kind),
         )
         results["contacts"] = [dict(r) for r in c.fetchall()]
 
+        # --- Vendors ---
         c.execute(
             """SELECT id, name AS title, category, email
                FROM vendors
@@ -7286,10 +7311,90 @@ def global_search(query, limit_per_kind=10):
             (like, like, like, limit_per_kind),
         )
         results["vendors"] = [dict(r) for r in c.fetchall()]
+
+        # --- Executives ---
+        c.execute(
+            """SELECT id, name AS title, email, company_id
+               FROM executives
+               WHERE LOWER(name) LIKE ?
+                  OR LOWER(COALESCE(email,'')) LIKE ?
+               ORDER BY name
+               LIMIT ?""",
+            (like, like, limit_per_kind),
+        )
+        results["executives"] = [dict(r) for r in c.fetchall()]
+
+        # =====================================================
+        # TIER 1 ADDITIONS
+        # =====================================================
+
+        # --- Companies ---
+        c.execute(
+            """SELECT id, name AS title,
+                      COALESCE(policy_notes,'') AS notes,
+                      COALESCE(default_cost_center,'') AS cost_center
+               FROM companies
+               WHERE LOWER(name) LIKE ?
+                  OR LOWER(COALESCE(policy_notes,'')) LIKE ?
+                  OR LOWER(COALESCE(default_cost_center,'')) LIKE ?
+               ORDER BY name
+               LIMIT ?""",
+            (like, like, like, limit_per_kind),
+        )
+        results["companies"] = [dict(r) for r in c.fetchall()]
+
+        # --- Venues ---
+        c.execute(
+            """SELECT id, name AS title, city, country
+               FROM venues
+               WHERE LOWER(name) LIKE ?
+                  OR LOWER(COALESCE(address,'')) LIKE ?
+                  OR LOWER(COALESCE(city,'')) LIKE ?
+                  OR LOWER(COALESCE(country,'')) LIKE ?
+               ORDER BY name
+               LIMIT ?""",
+            (like, like, like, like, limit_per_kind),
+        )
+        results["venues"] = [dict(r) for r in c.fetchall()]
+
+        # --- Meeting action items (return parent meeting for click) ---
+        c.execute(
+            """SELECT ai.id,
+                      ai.description AS title,
+                      ai.due_date AS date,
+                      ai.status,
+                      m.id AS meeting_id,
+                      m.title AS meeting_title,
+                      e.name AS executive_name
+               FROM meeting_action_items ai
+               JOIN meetings m ON ai.meeting_id = m.id
+               LEFT JOIN executives e ON m.exec_id = e.id
+               WHERE LOWER(ai.description) LIKE ?
+               ORDER BY ai.due_date IS NULL, ai.due_date DESC
+               LIMIT ?""",
+            (like, limit_per_kind),
+        )
+        results["action_items"] = [dict(r) for r in c.fetchall()]
+
+        # --- Meeting decisions (return parent meeting for click) ---
+        c.execute(
+            """SELECT md.id,
+                      md.decision AS title,
+                      m.id AS meeting_id,
+                      m.title AS meeting_title,
+                      e.name AS executive_name
+               FROM meeting_decisions md
+               JOIN meetings m ON md.meeting_id = m.id
+               LEFT JOIN executives e ON m.exec_id = e.id
+               WHERE LOWER(md.decision) LIKE ?
+               LIMIT ?""",
+            (like, limit_per_kind),
+        )
+        results["decisions"] = [dict(r) for r in c.fetchall()]
+
     finally:
         conn.close()
     return results
-
 
 # =========================================================
 # BACKUP & RESTORE

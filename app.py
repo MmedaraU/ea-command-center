@@ -8907,6 +8907,113 @@ with tab_dashboard:
     today_iso = datetime.now().date().isoformat()
     week_end_iso = (datetime.now().date() + timedelta(days=7)).isoformat()
 
+    # ================================================
+    # SEARCH — always first
+    # ================================================
+    search_q = st.text_input(
+        "🔍 Search everything",
+        key="global_search_q",
+        placeholder=(
+            "Search meetings, events, engagements, trips, contacts, "
+            "vendors, executives, companies, venues, action items…"
+        ),
+    )
+
+    if search_q:
+        results = db.global_search(search_q, limit_per_kind=8)
+        total = sum(len(v) for v in results.values())
+        if total == 0:
+            st.caption("No matches.")
+        else:
+            st.caption(f"**{total}** result(s) for *{search_q}*")
+
+            cols = st.columns(3)
+            # (label, open_action) — open_action determines click behavior
+            col_map = {
+                "meetings":     (cols[0], "📅 Meetings",     "meeting"),
+                "action_items": (cols[0], "✅ Action Items",  "parent_meeting"),
+                "events":       (cols[0], "🎉 Events",       "event"),
+                "decisions":    (cols[0], "📌 Decisions",     "parent_meeting"),
+                "speaking":     (cols[1], "🎤 Speaking",     "speaking"),
+                "trips":        (cols[1], "✈️ Trips",        "trip"),
+                "executives":   (cols[1], "👤 Executives",   "none"),
+                "companies":    (cols[1], "🏢 Companies",    "directory"),
+                "contacts":     (cols[2], "👥 Contacts",     "contact"),
+                "vendors":      (cols[2], "🏢 Vendors",      "vendor"),
+                "venues":       (cols[2], "🏢 Venues",       "directory"),
+            }
+
+            for kind, (col, label, open_action) in col_map.items():
+                rows = results.get(kind) or []
+                if not rows:
+                    continue
+                with col:
+                    st.markdown(f"**{label}** ({len(rows)})")
+                    for r in rows:
+                        display = r.get("title") or "—"
+                        exec_name = r.get("executive_name")
+                        if exec_name and kind not in ("executives",):
+                            display = f"{display} · {exec_name}"
+
+                        # Context caption
+                        caption_bits = []
+                        if kind in ("action_items", "decisions"):
+                            caption_bits.append(
+                                f"from *{r.get('meeting_title') or '—'}*"
+                            )
+                        elif kind == "venues":
+                            loc = ", ".join(
+                                x for x in [r.get("city"), r.get("country")] if x
+                            )
+                            if loc:
+                                caption_bits.append(f"📍 {loc}")
+                        elif kind == "contacts":
+                            if r.get("role"):
+                                caption_bits.append(r["role"])
+                            if r.get("tags"):
+                                caption_bits.append(f"🏷 {r['tags']}")
+                        elif kind == "vendors":
+                            if r.get("category"):
+                                caption_bits.append(r["category"])
+                        elif kind == "companies":
+                            if r.get("cost_center"):
+                                caption_bits.append(r["cost_center"])
+
+                        key = f"gs_{kind}_{r['id']}"
+                        if st.button(display, key=key, use_container_width=True):
+                            if open_action == "meeting":
+                                st.session_state["dialog_meeting_id"] = r["id"]
+                                st.rerun()
+                            elif open_action == "event":
+                                st.session_state["dialog_event_id"] = r["id"]
+                                st.rerun()
+                            elif open_action == "speaking":
+                                st.session_state["dialog_speaking_id"] = r["id"]
+                                st.rerun()
+                            elif open_action == "trip":
+                                st.session_state["dialog_trip_id"] = r["id"]
+                                st.rerun()
+                            elif open_action == "contact":
+                                st.session_state["dialog_comm_contact_id"] = r["id"]
+                                st.rerun()
+                            elif open_action == "vendor":
+                                st.session_state["dialog_vendor_id"] = r["id"]
+                                st.rerun()
+                            elif open_action == "parent_meeting":
+                                st.session_state["dialog_meeting_id"] = r["meeting_id"]
+                                st.rerun()
+                            elif open_action == "directory":
+                                st.info(
+                                    f"Open the **🗂️ Directory** tab to view "
+                                    f"{display}."
+                                )
+                            elif open_action == "none":
+                                st.info(f"{display}")
+
+                        if caption_bits:
+                            st.caption("  ·  ".join(caption_bits))
+        st.divider()
+
     st.markdown(f"### 📌 Today — {datetime.now().strftime('%A, %d %b %Y')}")
 
     # ================================================
@@ -9181,52 +9288,6 @@ with tab_dashboard:
     st.divider()
 
     # ================================================
-    # GLOBAL SEARCH
-    # ================================================
-    search_q = st.text_input(
-        "🔍 Search everything (meetings, events, engagements, trips, "
-        "contacts, vendors)",
-        key="global_search_q",
-        placeholder="Type a keyword and press Enter",
-    )
-    if search_q:
-        results = db.global_search(search_q, limit_per_kind=8)
-        total = sum(len(v) for v in results.values())
-        if total == 0:
-            st.caption("No matches.")
-        else:
-            st.caption(f"**{total}** result(s)")
-            cols = st.columns(3)
-            col_map = {
-                "meetings": (cols[0], "📅 Meetings", "dialog_meeting_id"),
-                "events": (cols[0], "🎉 Events", "dialog_event_id"),
-                "speaking": (cols[1], "🎤 Speaking", "dialog_speaking_id"),
-                "trips": (cols[1], "✈️ Trips", None),
-                "contacts": (cols[2], "👥 Contacts", "dialog_comm_contact_id"),
-                "vendors": (cols[2], "🏢 Vendors", "dialog_vendor_id"),
-            }
-            for kind, (col, label, dialog_key) in col_map.items():
-                rows = results.get(kind) or []
-                if not rows:
-                    continue
-                with col:
-                    st.markdown(f"**{label}** ({len(rows)})")
-                    for r in rows:
-                        if st.button(
-                            f"{r['title'] or '—'}",
-                            key=f"gs_{kind}_{r['id']}",
-                            use_container_width=True,
-                        ):
-                            if dialog_key:
-                                st.session_state[dialog_key] = r["id"]
-                                st.rerun()
-                            elif kind == "trips":
-                                st.session_state["dialog_trip_id"] = r["id"]
-                                st.rerun()
-
-    st.divider()
-
-    # ================================================
     # TICKTICK WIDGET (collapsed)
     # ================================================
     if tt_connected:
@@ -9429,22 +9490,6 @@ with tab_dashboard:
                 with col_b:
                     st.write(fmt_money(total, "USD"))
             st.divider()
-
-        # ---- Library counts ----
-        st.subheader("📚 Library Content")
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Guides", len(db.get_destination_guides(active_only=True)))
-            st.metric("Visa Rules", len(db.get_visa_rules(active_only=True)))
-        with col2:
-            st.metric("Checklist Tpls", len(db.get_checklist_templates(active_only=True)))
-            st.metric("Packing Tpls", len(db.get_packing_templates(active_only=True)))
-        with col3:
-            st.metric("Trip Tpls", len(db.get_trip_templates(active_only=True)))
-            st.metric("Hospitals", len(db.get_hospitals(active_only=True)))
-        with col4:
-            st.metric("Embassies", len(db.get_embassies(active_only=True)))
-            st.metric("Venues", len(active_venues))
             
 # =========================================================
 # TAB: TRIP PLANNER
