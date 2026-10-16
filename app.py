@@ -9366,131 +9366,58 @@ with tab_dashboard:
     # TRAVEL OVERVIEW — collapsed by default
     # ================================================
     with st.expander("✈️ Travel Overview", expanded=False):
-        # ---- Load travel data ----
-        all_execs = db.get_all_executives(active_only=False)
-        active_execs = [e for e in all_execs if e.get("is_active", 1)]
-        all_companies = db.get_all_companies(active_only=False)
-        active_companies = [c for c in all_companies if c.get("is_active", 1)]
-        all_contacts = db.get_contacts(active_only=False)
-        active_contacts = [c for c in all_contacts if c.get("is_active", 1)]
-        all_venues = db.get_venues(active_only=False)
-        active_venues = [v for v in all_venues if v.get("is_active", 1)]
         summaries = db.get_spending_summary()
-
         today = datetime.now().date()
-        upcoming_trips = [t for t in summaries if _trip_is_upcoming(t, today)]
-        active_trips = [t for t in summaries if _trip_is_active(t, today)]
-        past_trips = [t for t in summaries if _trip_is_past(t, today)]
 
-        # ---- Top metrics ----
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric(
-                "Executives", len(active_execs),
-                delta=f"{len(all_execs) - len(active_execs)} inactive"
-                if len(all_execs) > len(active_execs) else None,
-            )
-        with col2:
-            st.metric(
-                "Companies", len(active_companies),
-                delta=f"{len(all_companies) - len(active_companies)} inactive"
-                if len(all_companies) > len(active_companies) else None,
-            )
-        with col3:
-            st.metric("Contacts", len(active_contacts))
-        with col4:
-            st.metric("Total Trips", len(summaries))
+        upcoming_trips = [
+            t for t in summaries if _trip_is_upcoming(t, today)
+        ]
+        active_trips = [
+            t for t in summaries if _trip_is_active(t, today)
+        ]
 
-        col1, col2, col3, col4 = st.columns(4)
+        # ---- Metrics — three numbers ----
+        this_month_spend = 0.0
+        for t in summaries:
+            if _trips_in_month(t, today.year, today.month):
+                amt_usd, _ok = _trip_total_in_usd(t)
+                this_month_spend += amt_usd
+
+        col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Upcoming (30d)", len(upcoming_trips))
         with col2:
             st.metric("In Progress", len(active_trips))
         with col3:
-            st.metric("Past Trips", len(past_trips))
-        with col4:
-            this_month_spend = 0.0
-            for t in summaries:
-                if _trips_in_month(t, today.year, today.month):
-                    amt_usd, _ok = _trip_total_in_usd(t)
-                    this_month_spend += amt_usd
             st.metric(
                 f"Spend · {today.strftime('%b %Y')}",
                 fmt_money(this_month_spend, "USD"),
             )
 
-        st.divider()
-
-        # ---- Upcoming trips ----
-        st.subheader("📅 Upcoming Trips (next 30 days)")
+        # ---- Upcoming trips list ----
+        st.markdown("**📅 Upcoming Trips (next 30 days)**")
         if not upcoming_trips:
-            st.info("No trips scheduled in the next 30 days.")
+            st.caption("No trips scheduled in the next 30 days.")
         else:
-            for t in sorted(upcoming_trips, key=lambda x: x.get("start_date", "")):
-                col_a, col_b, col_c, col_d, col_e = st.columns([2, 2, 1.5, 1.5, 1])
+            for t in sorted(
+                upcoming_trips, key=lambda x: x.get("start_date", "")
+            ):
+                col_a, col_b, col_c, col_d = st.columns([3, 2, 2, 2])
                 with col_a:
                     st.write(f"**{t.get('destination', '—')}**")
                 with col_b:
                     st.caption(t.get("executive_name", "—"))
                 with col_c:
-                    st.write(fmt_date(t.get("start_date")))
+                    st.caption(fmt_date(t.get("start_date")))
                 with col_d:
-                    st.write(fmt_money(t.get("budget") or 0, t.get("base_currency", "USD")))
-                with col_e:
                     status = t.get("status", "draft")
                     st.caption(
                         "Draft" if status == "draft"
                         else "Approved" if status == "approved"
-                        else "Final" if status == "final" else status
+                        else "Final" if status == "final"
+                        else status
                     )
-                st.divider()
 
-        # ---- Spending snapshot ----
-        st.subheader("💰 Spending Snapshot")
-        st.caption("All figures converted to USD at each trip's start-date rate.")
-        col1, col2, col3 = st.columns(3)
-
-        def _sum_spend(trips):
-            total = 0.0
-            for t in trips:
-                amt_usd, _ok = _trip_total_in_usd(t)
-                total += amt_usd
-            return total
-
-        month_trips = [t for t in summaries
-                       if _trips_in_month(t, today.year, today.month)]
-        quarter = (today.month - 1) // 3 + 1
-        quarter_trips = [t for t in summaries
-                         if _trips_in_quarter(t, today.year, quarter)]
-        year_trips = [
-            t for t in summaries
-            if any(_trips_in_month(t, today.year, m) for m in range(1, 13))
-        ]
-
-        with col1:
-            st.metric(f"This Month ({today.strftime('%b')})", fmt_money(_sum_spend(month_trips), "USD"))
-        with col2:
-            st.metric(f"Q{quarter} {today.year}", fmt_money(_sum_spend(quarter_trips), "USD"))
-        with col3:
-            st.metric(f"{today.year} YTD", fmt_money(_sum_spend(year_trips), "USD"))
-
-        # ---- Per-executive breakdown ----
-        if summaries:
-            st.subheader("👤 Spend by Executive")
-            by_exec = {}
-            for t in summaries:
-                name = t.get("executive_name", "—")
-                amt_usd, _ok = _trip_total_in_usd(t)
-                by_exec[name] = by_exec.get(name, 0.0) + amt_usd
-            rows = sorted(by_exec.items(), key=lambda kv: -kv[1])
-            for name, total in rows:
-                col_a, col_b = st.columns([3, 2])
-                with col_a:
-                    st.write(f"**{name}**")
-                with col_b:
-                    st.write(fmt_money(total, "USD"))
-            st.divider()
-            
 # =========================================================
 # TAB: TRIP PLANNER
 # =========================================================
@@ -10829,8 +10756,11 @@ with _trip_subtabs[0]:
             st.session_state["lib_hint_templates"] = True
             st.rerun()
 
-    search_trip = st.text_input("🔍 Search Trips",
-        placeholder="Destination, purpose, or executive name...", key="dash_search")
+    search_trip = st.text_input(
+        "🔍 Search Trips",
+        placeholder="Destination, purpose, or executive name...",
+        key="dash_search",
+    )
 
     col_dash1, col_dash2, col_dash3 = st.columns([2, 2, 1])
     with col_dash1:
@@ -10839,7 +10769,8 @@ with _trip_subtabs[0]:
             for e in db.get_all_executives(active_only=False)
         ]
         exec_filter = st.selectbox(
-            "Filter by Executive", exec_filter_options, key="dash_filter_tab"
+            "Filter by Executive", exec_filter_options,
+            key="dash_filter_tab",
         )
         exec_id_filter = (
             None
@@ -10853,12 +10784,17 @@ with _trip_subtabs[0]:
     with col_dash3:
         st.write("")
         st.write("")
-        show_past = st.checkbox("Include past trips", value=True, key="dash_show_past")
+        show_past = st.checkbox(
+            "Include past trips", value=True, key="dash_show_past"
+        )
     start_filter = date_range[0].isoformat() if len(date_range) > 0 else None
     end_filter = date_range[1].isoformat() if len(date_range) > 1 else None
 
-    summary_data = db.get_spending_summary(exec_id=exec_id_filter,
-        start_date=start_filter, end_date=end_filter)
+    summary_data = db.get_spending_summary(
+        exec_id=exec_id_filter,
+        start_date=start_filter,
+        end_date=end_filter,
+    )
 
     # ---- Filter out past trips when the toggle is off
     if not show_past:
@@ -10871,16 +10807,17 @@ with _trip_subtabs[0]:
 
     if search_trip:
         sl = search_trip.lower()
-        summary_data = [trip for trip in summary_data
+        summary_data = [
+            trip for trip in summary_data
             if sl in trip.get("destination", "").lower()
             or sl in trip.get("purpose", "").lower()
-            or sl in trip.get("executive_name", "").lower()]
+            or sl in trip.get("executive_name", "").lower()
+        ]
 
     if "selected_trip_ids" not in st.session_state:
         st.session_state.selected_trip_ids = set()
 
-    # Defensive: dedupe trips by trip_id. Coerce the key to a stable
-    # string so `5` and `"5"` collapse, and drop rows with no ID.
+    # Defensive: dedupe trips by trip_id.
     if summary_data:
         seen = set()
         deduped = []
@@ -10895,14 +10832,91 @@ with _trip_subtabs[0]:
             deduped.append(t)
         summary_data = deduped
 
+    # ================================================
+    # TRAVEL REPORTS — metrics first, above the list
+    # ================================================
+    with st.expander("📊 Travel Reports", expanded=False):
+        # ---- Spending Snapshot ----
+        st.markdown("**💰 Spending Snapshot**")
+        st.caption(
+            "All figures converted to USD at each trip's start-date rate."
+        )
+
+        def _sum_spend(trips):
+            total = 0.0
+            for t in trips:
+                amt_usd, _ok = _trip_total_in_usd(t)
+                total += amt_usd
+            return total
+
+        today = datetime.now().date()
+        quarter = (today.month - 1) // 3 + 1
+
+        month_trips = [
+            t for t in summary_data
+            if _trips_in_month(t, today.year, today.month)
+        ]
+        quarter_trips = [
+            t for t in summary_data
+            if _trips_in_quarter(t, today.year, quarter)
+        ]
+        year_trips = [
+            t for t in summary_data
+            if any(_trips_in_month(t, today.year, m) for m in range(1, 13))
+        ]
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric(
+                f"This Month ({today.strftime('%b')})",
+                fmt_money(_sum_spend(month_trips), "USD"),
+            )
+        with col2:
+            st.metric(
+                f"Q{quarter} {today.year}",
+                fmt_money(_sum_spend(quarter_trips), "USD"),
+            )
+        with col3:
+            st.metric(
+                f"{today.year} YTD",
+                fmt_money(_sum_spend(year_trips), "USD"),
+            )
+
+        # ---- Spend by Executive ----
+        if summary_data:
+            st.divider()
+            st.markdown("**👤 Spend by Executive**")
+            st.caption(
+                "All figures converted to USD at each trip's start-date rate."
+            )
+            by_exec = {}
+            for t in summary_data:
+                name = t.get("executive_name", "—")
+                amt_usd, _ok = _trip_total_in_usd(t)
+                by_exec[name] = by_exec.get(name, 0.0) + amt_usd
+            rows = sorted(by_exec.items(), key=lambda kv: -kv[1])
+            for name, total in rows:
+                col_a, col_b = st.columns([3, 2])
+                with col_a:
+                    st.write(f"**{name}**")
+                with col_b:
+                    st.write(fmt_money(total, "USD"))
+
+    # ================================================
+    # TRIP LIST
+    # ================================================
     if summary_data:
         st.subheader("Trip-Level Breakdown")
 
         col_select_all, col_delete_selected = st.columns([1, 3])
         with col_select_all:
             all_ids = [trip["trip_id"] for trip in summary_data]
-            all_selected = all(id in st.session_state.selected_trip_ids for id in all_ids)
-            if st.checkbox("Select All", value=all_selected, key="select_all_checkbox"):
+            all_selected = all(
+                id in st.session_state.selected_trip_ids for id in all_ids
+            )
+            if st.checkbox(
+                "Select All", value=all_selected, key="select_all_checkbox"
+            ):
                 if not all_selected:
                     st.session_state.selected_trip_ids = set(all_ids)
                     st.rerun()
@@ -10912,7 +10926,10 @@ with _trip_subtabs[0]:
                     st.rerun()
         with col_delete_selected:
             if st.session_state.selected_trip_ids:
-                st.write(f"**{len(st.session_state.selected_trip_ids)}** trip(s) selected.")
+                st.write(
+                    f"**{len(st.session_state.selected_trip_ids)}** "
+                    f"trip(s) selected."
+                )
                 if st.button("🗑️ Delete Selected", type="primary"):
                     st.session_state["confirm_mass_delete"] = True
             else:
@@ -10921,8 +10938,14 @@ with _trip_subtabs[0]:
         if st.session_state.get("confirm_mass_delete", False):
             render_delete_confirmation(
                 flag_key="confirm_mass_delete",
-                title=f"Permanently delete {len(st.session_state.selected_trip_ids)} selected trip(s)?",
-                on_confirm=lambda: db.delete_trips(list(st.session_state.selected_trip_ids)),
+                title=(
+                    f"Permanently delete "
+                    f"{len(st.session_state.selected_trip_ids)} "
+                    f"selected trip(s)?"
+                ),
+                on_confirm=lambda: db.delete_trips(
+                    list(st.session_state.selected_trip_ids)
+                ),
             )
 
         cols_widths = [0.4, 5, 0.8, 0.8]
@@ -10941,15 +10964,14 @@ with _trip_subtabs[0]:
         for trip in summary_data:
             trip_base_currency = trip.get("base_currency", "USD")
             trip_id = trip["trip_id"]
-            # Final guard: if upstream produced a duplicate, skip it
-            # here rather than emitting a colliding widget key.
             _tid_key = str(trip_id)
             if _tid_key in _rendered_trip_ids:
                 continue
             _rendered_trip_ids.add(_tid_key)
             trip_end = trip.get("end_date")
             is_past = bool(
-                trip_end and trip_end[:10] < datetime.now().date().isoformat()
+                trip_end
+                and trip_end[:10] < datetime.now().date().isoformat()
             )
 
             status = trip.get("status", "draft")
@@ -10975,19 +10997,22 @@ with _trip_subtabs[0]:
 
                 with cols[0]:
                     is_checked = trip_id in st.session_state.selected_trip_ids
-                    if st.checkbox("", value=is_checked, key=f"sel_{trip_id}"):
+                    if st.checkbox(
+                        "", value=is_checked, key=f"sel_{trip_id}"
+                    ):
                         st.session_state.selected_trip_ids.add(trip_id)
                     else:
                         st.session_state.selected_trip_ids.discard(trip_id)
 
                 with cols[1]:
-                    # Trip Name (Purpose) as the primary line
-                    st.markdown(f"### {trip.get('purpose') or 'Untitled Trip'}")
-                    # Executive and Company as secondary caption
-                    st.caption(f"👤 {trip['executive_name']} · {trip['company_name']}")
-                    # Destination and Status
+                    st.markdown(
+                        f"### {trip.get('purpose') or 'Untitled Trip'}"
+                    )
+                    st.caption(
+                        f"👤 {trip['executive_name']} · "
+                        f"{trip['company_name']}"
+                    )
                     st.write(f"📍 {trip['destination']}  ·  {status_label}")
-                    # Financials
                     st.caption(
                         f"Budget: {fmt_money(trip['budget'], trip_base_currency)}  ·  "
                         f"Spent: {fmt_money(trip['total_spent'], trip_base_currency)}  ·  "
@@ -11007,7 +11032,9 @@ with _trip_subtabs[0]:
                     if st.button("🗑️", key=f"del_trip_dash_{trip_id}"):
                         st.session_state[f"confirm_del_trip_{trip_id}"] = True
 
-                if st.session_state.get(f"confirm_del_trip_{trip_id}", False):
+                if st.session_state.get(
+                    f"confirm_del_trip_{trip_id}", False
+                ):
 
                     def _del_trip():
                         db.delete_trip(trip_id)
@@ -11015,13 +11042,20 @@ with _trip_subtabs[0]:
 
                     render_delete_confirmation(
                         flag_key=f"confirm_del_trip_{trip_id}",
-                        title=f"Permanently delete trip to {trip['destination']}?",
+                        title=(
+                            f"Permanently delete trip to "
+                            f"{trip['destination']}?"
+                        ),
                         on_confirm=_del_trip,
                     )
                 st.divider()
 
+        # ================================================
+        # EXPORT DATA
+        # ================================================
         st.subheader("📊 Export Data")
         col_exp1, col_exp2, col_exp3, col_exp4 = st.columns(4)
+
         with col_exp1:
             headers = [
                 "Executive",
@@ -11057,12 +11091,19 @@ with _trip_subtabs[0]:
             st.download_button(
                 "📊 Export Trips CSV",
                 data=output.getvalue().encode("utf-8"),
-                file_name=f"trips_summary_{datetime.now().strftime('%Y%m%d')}.csv",
+                file_name=(
+                    f"trips_summary_"
+                    f"{datetime.now().strftime('%Y%m%d')}.csv"
+                ),
                 mime="text/csv",
                 key="dash_csv_tab",
             )
+
         with col_exp2:
-            if st.button("📄 Export Spending Report (Word)", key="dash_report_tab"):
+            if st.button(
+                "📄 Export Spending Report (Word)",
+                key="dash_report_tab",
+            ):
                 doc_stream = doc_generator.generate_spending_report_doc(
                     exec_filter if exec_filter != "All" else "All Executives",
                     summary_data,
@@ -11074,10 +11115,17 @@ with _trip_subtabs[0]:
                 st.download_button(
                     "⬇️ Download Word Report",
                     data=doc_stream,
-                    file_name=f"spending_report_{datetime.now().strftime('%Y%m%d')}.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml",
+                    file_name=(
+                        f"spending_report_"
+                        f"{datetime.now().strftime('%Y%m%d')}.docx"
+                    ),
+                    mime=(
+                        "application/vnd.openxmlformats-officedocument."
+                        "wordprocessingml"
+                    ),
                     key="dash_report_download_tab",
                 )
+
         with col_exp3:
             if st.button("📊 Export to Excel", key="dash_excel_tab"):
                 excel_stream = export_spending_to_excel(summary_data, "USD")
@@ -11085,14 +11133,21 @@ with _trip_subtabs[0]:
                     st.download_button(
                         "⬇️ Download .xlsx",
                         data=excel_stream,
-                        file_name=f"trips_summary_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        file_name=(
+                            f"trips_summary_"
+                            f"{datetime.now().strftime('%Y%m%d')}.xlsx"
+                        ),
+                        mime=(
+                            "application/vnd.openxmlformats-officedocument."
+                            "spreadsheetml.sheet"
+                        ),
                         key="dash_excel_download_tab",
                     )
+
         with col_exp4:
-            if st.button("📅 Export All to Calendar", key="dash_ics_tab"):
-                # Build the payload: one entry per trip in the filtered set,
-                # carrying that trip's items and executive timezone.
+            if st.button(
+                "📅 Export All to Calendar", key="dash_ics_tab"
+            ):
                 trips_with_items = []
                 for trip_row in summary_data:
                     trip_id = trip_row["trip_id"]
@@ -11100,9 +11155,12 @@ with _trip_subtabs[0]:
                     if not full_trip:
                         continue
                     items = db.get_items_for_trip(trip_id)
-                    exec_profile = db.get_executive_profile(full_trip["exec_id"])
+                    exec_profile = db.get_executive_profile(
+                        full_trip["exec_id"]
+                    )
                     exec_tz = (
-                        exec_profile.get("timezone", "UTC") if exec_profile else "UTC"
+                        exec_profile.get("timezone", "UTC")
+                        if exec_profile else "UTC"
                     )
                     trips_with_items.append(
                         {
@@ -11115,7 +11173,9 @@ with _trip_subtabs[0]:
                 if not trips_with_items:
                     st.warning("No trips to export.")
                 else:
-                    ics_bytes = utils.generate_ics_for_trips(trips_with_items)
+                    ics_bytes = utils.generate_ics_for_trips(
+                        trips_with_items
+                    )
                     if ics_bytes:
                         st.download_button(
                             "⬇️ Download .ics",
@@ -11133,14 +11193,10 @@ with _trip_subtabs[0]:
         st.info("No trips match the filters.")
 
     # ---- Open the trip edit dialog (if a trip is selected) ----
-    # This runs once per script, regardless of how many trips are listed.
-    # The dialog only appears when "dialog_trip_id" is set, which happens
-    # when the user clicks a row's 📂 Edit button above.
     if st.session_state.get("dialog_trip_id"):
         _render_trip_edit_modal(
             st.session_state["dialog_trip_id"], country_list
         )
-
 
 # =========================================================
 # TAB: COMPANIES
