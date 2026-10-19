@@ -5383,6 +5383,9 @@ def auto_log_meeting_completion(meeting_id, exec_id):
     for this meeting via the linked_to fields).
 
     Returns the number of new entries created.
+
+    Note: contact summary refreshes happen AFTER the writer connection
+    is closed, to avoid SQLite write-write deadlocks.
     """
     meeting = get_meeting(meeting_id)
     if not meeting:
@@ -5395,6 +5398,8 @@ def auto_log_meeting_completion(meeting_id, exec_id):
     comm_date = meeting.get("meeting_date") or datetime.now().date().isoformat()
 
     created = 0
+    touched_contact_ids = []
+
     conn = sqlite3.connect(DB_PATH, timeout=30)
     try:
         c = conn.cursor()
@@ -5414,14 +5419,28 @@ def auto_log_meeting_completion(meeting_id, exec_id):
                    (contact_id, exec_id, comm_date, channel, direction,
                     summary, linked_to_type, linked_to_id)
                    VALUES (?, ?, ?, 'in_person', 'outbound', ?, 'meeting', ?)""",
-                (att["contact_id"], exec_id, comm_date, summary, meeting_id),
+                (
+                    att["contact_id"],
+                    exec_id,
+                    comm_date,
+                    summary,
+                    meeting_id,
+                ),
             )
             created += 1
-            _refresh_contact_communication_summary(att["contact_id"])
+            touched_contact_ids.append(att["contact_id"])
         conn.commit()
     finally:
         conn.close()
+
+    # Refresh contact summaries AFTER the writer connection is closed.
+    # Each refresh opens its own connection, so we can't do this while
+    # the insert transaction is still holding a write lock.
+    for cid in touched_contact_ids:
+        _refresh_contact_communication_summary(cid)
+
     return created
+
 
 # =========================================================
 # EVENTS

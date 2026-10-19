@@ -5055,8 +5055,15 @@ def _render_event_detail_dialog(event_id):
             key=f"ev_brief_gen_{event_id}",
             use_container_width=True,
         ):
-            brief_html = brief_generator.generate_event_brief_html(event_id)
-            st.session_state[f"ev_brief_html_{event_id}"] = brief_html
+            st.session_state[f"ev_brief_html_{event_id}"] = (
+                brief_generator.generate_event_brief_html(event_id)
+            )
+            st.session_state[f"ev_brief_pdf_{event_id}"] = (
+                brief_generator.generate_event_brief_pdf(event_id)
+            )
+            st.session_state[f"ev_brief_docx_{event_id}"] = (
+                brief_generator.generate_event_brief_docx(event_id)
+            )
             st.rerun()
 
         brief_html = st.session_state.get(f"ev_brief_html_{event_id}")
@@ -5064,7 +5071,9 @@ def _render_event_detail_dialog(event_id):
             _render_brief_panel(
                 container_key=f"ev_brief_{event_id}",
                 brief_html=brief_html,
-                default_filename=f"event_brief_{event_id}.html",
+                brief_pdf=st.session_state.get(f"ev_brief_pdf_{event_id}"),
+                brief_docx=st.session_state.get(f"ev_brief_docx_{event_id}"),
+                default_stem=f"event_brief_{event_id}",
             )
         else:
             st.caption(
