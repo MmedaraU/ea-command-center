@@ -471,7 +471,6 @@ def parse_itinerary_paste(raw_text, default_timezone=None):
     return items, errors
 
 
-
 # Header aliases for expense bulk import
 _EXPENSE_COLUMN_ALIASES = {
     "traveler": "traveler",
@@ -632,3 +631,285 @@ def parse_expense_paste(raw_text, default_currency="USD"):
         })
 
     return expenses, errors
+
+    # =========================================================
+# ICS EXPORTS — Meetings, Events, Speaking
+# =========================================================
+
+
+def _parse_time(time_str, fallback_hour=9, fallback_min=0):
+    """
+    Parse a user-entered time like '14:30', '2:30 PM', or '1430'.
+    Returns (hour, minute). Falls back to defaults if unparseable.
+    """
+    if not time_str:
+        return fallback_hour, fallback_min
+    s = str(time_str).strip().lower()
+    try:
+        if "am" in s or "pm" in s:
+            # 12-hour format
+            t = s.replace("am", "").replace("pm", "").strip()
+            if ":" in t:
+                h, m = t.split(":")
+            else:
+                h, m = t, "0"
+            h = int(h)
+            m = int(m)
+            if "pm" in s and h != 12:
+                h += 12
+            if "am" in s and h == 12:
+                h = 0
+            return h, m
+        if ":" in s:
+            h, m = s.split(":")
+            return int(h), int(m)
+        if len(s) == 4 and s.isdigit():
+            return int(s[:2]), int(s[2:])
+        if s.isdigit():
+            return int(s), 0
+    except Exception:
+        pass
+    return fallback_hour, fallback_min
+
+
+def _ics_header():
+    cal = Calendar()
+    cal.add("prodid", "-//EA Command Center//local//")
+    cal.add("version", "2.0")
+    cal.add("calscale", "GREGORIAN")
+    return cal
+
+
+def generate_ics_for_meetings(meetings, exec_timezones=None):
+    """
+    Build an .ics file from a list of meeting records.
+
+    meetings: list of dicts (from db.get_meetings)
+    exec_timezones: dict {exec_id: tz_string} for per-executive timezone.
+                    Falls back to UTC if missing.
+    """
+    cal = _ics_header()
+    tz_map = exec_timezones or {}
+
+    for m in meetings:
+        if not m.get("meeting_date"):
+            continue
+        exec_id = m.get("exec_id")
+        tz_str = tz_map.get(exec_id) or "UTC"
+        try:
+            tz = pytz.timezone(tz_str)
+        except Exception:
+            tz = pytz.UTC
+
+        try:
+            base_date = datetime.fromisoformat(m["meeting_date"]).date()
+        except Exception:
+            continue
+
+        hour, minute = _parse_time(m.get("meeting_time"))
+        start_naive = datetime(
+            base_date.year, base_date.month, base_date.day, hour, minute
+        )
+        duration = m.get("duration_minutes") or 60
+        end_naive = start_naive + timedelta(minutes=duration)
+
+        try:
+            start_utc = tz.localize(start_naive).astimezone(pytz.UTC)
+            end_utc = tz.localize(end_naive).astimezone(pytz.UTC)
+        except Exception:
+            start_utc = start_naive.replace(tzinfo=pytz.UTC)
+            end_utc = end_naive.replace(tzinfo=pytz.UTC)
+
+        event = Event()
+        event.add("uid", f"meeting-{m['id']}@ea-command-center")
+        event.add("summary", f"📅 {m.get('title') or 'Meeting'}")
+        event.add("dtstart", start_utc)
+        event.add("dtend", end_utc)
+
+        loc = m.get("location") or m.get("video_link") or ""
+        if loc:
+            event.add("location", loc)
+
+        desc_parts = []
+        if m.get("executive_name"):
+            desc_parts.append(f"Executive: {m['executive_name']}")
+        if m.get("meeting_type"):
+            desc_parts.append(f"Type: {m['meeting_type']}")
+        if m.get("status"):
+            desc_parts.append(f"Status: {m['status']}")
+        if m.get("agenda"):
+            desc_parts.append(f"\nAgenda:\n{m['agenda']}")
+        if m.get("notes_native"):
+            desc_parts.append(f"\nNotes:\n{m['notes_native']}")
+        if m.get("calendar_event_url"):
+            desc_parts.append(f"\nCalendar: {m['calendar_event_url']}")
+        if desc_parts:
+            event.add("description", "\n".join(desc_parts))
+
+        cal.add_component(event)
+
+    return cal.to_ical()
+
+
+def generate_ics_for_events(events, exec_timezones=None):
+    """
+    Build an .ics file from a list of event records.
+    Events render as one event per day of the event (single day is most
+    common). Multi-day events use DTEND = end date + 1 day.
+    """
+    cal = _ics_header()
+    tz_map = exec_timezones or {}
+
+    for ev in events:
+        if not ev.get("event_date"):
+            continue
+        exec_id = ev.get("exec_id")
+        tz_str = tz_map.get(exec_id) or "UTC"
+        try:
+            tz = pytz.timezone(tz_str)
+        except Exception:
+            tz = pytz.UTC
+
+        try:
+            base_date = datetime.fromisoformat(ev["event_date"]).date()
+        except Exception:
+            continue
+
+        # Parse start/end times
+        start_h, start_m = _parse_time(ev.get("start_time"), 9, 0)
+        end_h, end_m = _parse_time(ev.get("end_time"), start_h + 2, start_m)
+
+        start_naive = datetime(
+            base_date.year, base_date.month, base_date.day, start_h, start_m
+        )
+        end_naive = datetime(
+            base_date.year, base_date.month, base_date.day, end_h, end_m
+        )
+        # If end time is before start, assume +12 hours
+        if end_naive <= start_naive:
+            end_naive = start_naive + timedelta(hours=2)
+
+        try:
+            start_utc = tz.localize(start_naive).astimezone(pytz.UTC)
+            end_utc = tz.localize(end_naive).astimezone(pytz.UTC)
+        except Exception:
+            start_utc = start_naive.replace(tzinfo=pytz.UTC)
+            end_utc = end_naive.replace(tzinfo=pytz.UTC)
+
+        event = Event()
+        event.add("uid", f"event-{ev['id']}@ea-command-center")
+        event.add("summary", f"🎉 {ev.get('name') or 'Event'}")
+        event.add("dtstart", start_utc)
+        event.add("dtend", end_utc)
+
+        loc = ev.get("venue_name") or ev.get("location_override") or ""
+        if ev.get("venue_city"):
+            loc = f"{loc}, {ev['venue_city']}".strip(", ")
+        if loc:
+            event.add("location", loc)
+
+        desc_parts = []
+        if ev.get("executive_name"):
+            desc_parts.append(f"Executive: {ev['executive_name']}")
+        if ev.get("event_type"):
+            desc_parts.append(f"Type: {ev['event_type']}")
+        if ev.get("status"):
+            desc_parts.append(f"Status: {ev['status']}")
+        if ev.get("objective"):
+            desc_parts.append(f"\nObjective:\n{ev['objective']}")
+        if ev.get("calendar_event_url"):
+            desc_parts.append(f"\nCalendar: {ev['calendar_event_url']}")
+        if desc_parts:
+            event.add("description", "\n".join(desc_parts))
+
+        cal.add_component(event)
+
+    return cal.to_ical()
+
+
+def generate_ics_for_speaking(engagements, exec_timezones=None):
+    """
+    Build an .ics file from a list of speaking engagement records.
+    """
+    cal = _ics_header()
+    tz_map = exec_timezones or {}
+
+    for eng in engagements:
+        if not eng.get("engagement_date"):
+            continue
+        exec_id = eng.get("exec_id")
+        tz_str = tz_map.get(exec_id) or eng.get("timezone") or "UTC"
+        try:
+            tz = pytz.timezone(tz_str)
+        except Exception:
+            tz = pytz.UTC
+
+        try:
+            base_date = datetime.fromisoformat(eng["engagement_date"]).date()
+        except Exception:
+            continue
+
+        start_h, start_m = _parse_time(eng.get("engagement_time"), 9, 0)
+        # Duration is free-form ("45 min"), try to parse
+        duration_min = 60
+        dur_str = (eng.get("duration") or "").lower()
+        try:
+            if "min" in dur_str:
+                duration_min = int(
+                    "".join(c for c in dur_str.split("min")[0] if c.isdigit())
+                )
+            elif "hour" in dur_str or "hr" in dur_str:
+                hours = int(
+                    "".join(
+                        c
+                        for c in dur_str.split("hour")[0].split("hr")[0]
+                        if c.isdigit()
+                    )
+                )
+                duration_min = hours * 60
+        except Exception:
+            pass
+
+        start_naive = datetime(
+            base_date.year, base_date.month, base_date.day, start_h, start_m
+        )
+        end_naive = start_naive + timedelta(minutes=duration_min)
+
+        try:
+            start_utc = tz.localize(start_naive).astimezone(pytz.UTC)
+            end_utc = tz.localize(end_naive).astimezone(pytz.UTC)
+        except Exception:
+            start_utc = start_naive.replace(tzinfo=pytz.UTC)
+            end_utc = end_naive.replace(tzinfo=pytz.UTC)
+
+        event = Event()
+        event.add("uid", f"speaking-{eng['id']}@ea-command-center")
+        event.add(
+            "summary",
+            f"🎤 {eng.get('title') or 'Speaking Engagement'}",
+        )
+        event.add("dtstart", start_utc)
+        event.add("dtend", end_utc)
+
+        if eng.get("location"):
+            event.add("location", eng["location"])
+
+        desc_parts = []
+        if eng.get("executive_name"):
+            desc_parts.append(f"Executive: {eng['executive_name']}")
+        if eng.get("organizer_name"):
+            desc_parts.append(f"Organizer: {eng['organizer_name']}")
+        if eng.get("engagement_type"):
+            desc_parts.append(f"Type: {eng['engagement_type']}")
+        if eng.get("format"):
+            desc_parts.append(f"Format: {eng['format']}")
+        if eng.get("topic"):
+            desc_parts.append(f"\nTopic: {eng['topic']}")
+        if eng.get("audience"):
+            desc_parts.append(f"Audience: {eng['audience']}")
+        if desc_parts:
+            event.add("description", "\n".join(desc_parts))
+
+        cal.add_component(event)
+
+    return cal.to_ical()

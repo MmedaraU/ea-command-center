@@ -130,6 +130,30 @@ def migrate_db():
                 if col not in existing_contact_cols:
                     c.execute(f"ALTER TABLE contacts ADD COLUMN {col} {ddl}")
 
+        # --- meetings table ---
+        if _table_exists(c, "meetings"):
+            c.execute("PRAGMA table_info(meetings)")
+            existing = [row[1] for row in c.fetchall()]
+            for col, ddl in [
+                ("recurrence", "TEXT"),
+                ("recurrence_end_date", "TEXT"),
+                ("recurrence_parent_id", "INTEGER"),
+            ]:
+                if col not in existing:
+                    c.execute(f"ALTER TABLE meetings ADD COLUMN {col} {ddl}")
+
+        # --- events table ---
+        if _table_exists(c, "events"):
+            c.execute("PRAGMA table_info(events)")
+            existing = [row[1] for row in c.fetchall()]
+            for col, ddl in [
+                ("recurrence", "TEXT"),
+                ("recurrence_end_date", "TEXT"),
+                ("recurrence_parent_id", "INTEGER"),
+            ]:
+                if col not in existing:
+                    c.execute(f"ALTER TABLE events ADD COLUMN {col} {ddl}")
+
         # --- Support tables that may or may not exist yet ---
         c.execute("""CREATE TABLE IF NOT EXISTS executive_passports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -627,6 +651,9 @@ def init_db():
             notes_label TEXT,
             follow_up_date TEXT,
             linked_trip_id INTEGER,
+            recurrence TEXT,
+            recurrence_end_date TEXT,
+            recurrence_parent_id INTEGER,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (exec_id) REFERENCES executives(id) ON DELETE CASCADE,
@@ -697,6 +724,9 @@ def init_db():
             debrief_notes TEXT,
             rsvp_form_url TEXT,
             linked_trip_id INTEGER,
+            recurrence TEXT,
+            recurrence_end_date TEXT,
+            recurrence_parent_id INTEGER,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (exec_id) REFERENCES executives(id) ON DELETE CASCADE,
@@ -1034,6 +1064,11 @@ def init_db():
     finally:
         conn.close()
 
+    # Second pass: run migrations now that Phase 1 tables exist.
+    # The first pass in this function ran before Phase 1 tables were
+    # created, so any migrations targeting meetings/events/etc. were
+    # skipped.
+    migrate_db()
 
 # =========================================================
 # COMPANIES
@@ -4773,6 +4808,9 @@ def get_meetings(
                 "((m.notes_url IS NULL OR m.notes_url = '') "
                 "AND (m.notes_native IS NULL OR m.notes_native = ''))"
             )
+            # Skip child occurrences of recurring series — they inherit
+            # notes on the parent, not per child.
+            conditions.append("m.recurrence_parent_id IS NULL")
         if awaiting_response:
             conditions.append(
                 "m.status IN ('request_sent', 'pending', 'tentative', 'no_response')"
@@ -4780,9 +4818,13 @@ def get_meetings(
         if search:
             like = f"%{search.lower()}%"
             conditions.append(
-                "(LOWER(m.title) LIKE ? OR LOWER(COALESCE(m.agenda,'')) LIKE ?)"
+                "(LOWER(m.title) LIKE ? "
+                "OR LOWER(COALESCE(m.agenda,'')) LIKE ? "
+                "OR LOWER(COALESCE(m.location,'')) LIKE ? "
+                "OR LOWER(COALESCE(m.notes_native,'')) LIKE ? "
+                "OR LOWER(COALESCE(e.name,'')) LIKE ?)"
             )
-            params.extend([like, like])
+            params.extend([like, like, like, like, like])
 
         q = """SELECT m.*, e.name AS executive_name
                FROM meetings m
@@ -5521,9 +5563,13 @@ def get_events(
         if search:
             like = f"%{search.lower()}%"
             conditions.append(
-                "(LOWER(ev.name) LIKE ? " "OR LOWER(COALESCE(ev.objective,'')) LIKE ?)"
+                "(LOWER(ev.name) LIKE ? "
+                "OR LOWER(COALESCE(ev.objective,'')) LIKE ? "
+                "OR LOWER(COALESCE(ev.notes_native,'')) LIKE ? "
+                "OR LOWER(COALESCE(ev.location_override,'')) LIKE ? "
+                "OR LOWER(COALESCE(e.name,'')) LIKE ?)"
             )
-            params.extend([like, like])
+            params.extend([like, like, like, like, like])
 
         q = """SELECT ev.*, e.name AS executive_name,
                       v.name AS venue_name, v.city AS venue_city,
@@ -6649,9 +6695,11 @@ def get_speaking_engagements(
             conditions.append(
                 "(LOWER(se.title) LIKE ? "
                 "OR LOWER(COALESCE(se.organizer_name,'')) LIKE ? "
-                "OR LOWER(COALESCE(se.topic,'')) LIKE ?)"
+                "OR LOWER(COALESCE(se.topic,'')) LIKE ? "
+                "OR LOWER(COALESCE(se.location,'')) LIKE ? "
+                "OR LOWER(COALESCE(e.name,'')) LIKE ?)"
             )
-            params.extend([like, like, like])
+            params.extend([like, like, like, like, like])
 
         q = """SELECT se.*, e.name AS executive_name
                FROM speaking_engagements se
@@ -7874,3 +7922,207 @@ def get_ticktick_tasks_filtered(exec_id=None, open_only=True):
         if resolved_exec == exec_id:
             result.append(t)
     return result
+
+
+# =========================================================
+# RECURRING MEETINGS / EVENTS
+# =========================================================
+
+
+RECURRENCE_OPTIONS = [
+    ("", "Never"),
+    ("daily", "Daily"),
+    ("weekly", "Weekly"),
+    ("biweekly", "Every 2 weeks"),
+    ("monthly", "Monthly"),
+]
+
+
+def get_meetings_in_series(parent_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT * FROM meetings
+               WHERE recurrence_parent_id = ?
+               ORDER BY meeting_date""",
+            (parent_id,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_events_in_series(parent_id):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT * FROM events
+               WHERE recurrence_parent_id = ?
+               ORDER BY event_date""",
+            (parent_id,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def _next_recurrence_date(current, pattern):
+    """
+    Given a date and a recurrence pattern, return the next date.
+    Returns None if pattern is unrecognized.
+    """
+    if pattern == "daily":
+        return current + timedelta(days=1)
+    if pattern == "weekly":
+        return current + timedelta(weeks=1)
+    if pattern == "biweekly":
+        return current + timedelta(weeks=2)
+    if pattern == "monthly":
+        month = current.month + 1
+        year = current.year
+        if month > 12:
+            month = 1
+            year += 1
+        # Handle months without day 31, etc.
+        try:
+            return current.replace(year=year, month=month)
+        except ValueError:
+            return current.replace(year=year, month=month, day=28)
+    return None
+
+
+def generate_meeting_occurrences(parent_id, max_count=100):
+    """
+    Create future meeting records based on the parent's recurrence
+    pattern and end date. Skips dates already generated.
+    Returns (created_count, skipped_count).
+    """
+    parent = get_meeting(parent_id)
+    if not parent:
+        return 0, 0
+    if not parent.get("recurrence"):
+        return 0, 0
+    if parent.get("recurrence_parent_id"):
+        return 0, 0  # only run on the parent
+
+    end_date_str = parent.get("recurrence_end_date")
+    if not end_date_str:
+        return 0, 0
+
+    try:
+        end_date = datetime.fromisoformat(end_date_str).date()
+        start_date = datetime.fromisoformat(parent["meeting_date"]).date()
+    except Exception:
+        return 0, 0
+
+    if end_date <= start_date:
+        return 0, 0
+
+    # Collect existing child dates
+    existing = get_meetings_in_series(parent_id)
+    existing_dates = {m["meeting_date"] for m in existing if m.get("meeting_date")}
+    existing_dates.add(parent["meeting_date"])
+
+    pattern = parent["recurrence"]
+    current = start_date
+    created = 0
+    skipped = 0
+
+    for _ in range(max_count):
+        current = _next_recurrence_date(current, pattern)
+        if current is None or current > end_date:
+            break
+        iso = current.isoformat()
+        if iso in existing_dates:
+            skipped += 1
+            continue
+
+        new_id = add_meeting(
+            parent["exec_id"],
+            parent["title"],
+            meeting_type=parent.get("meeting_type"),
+            status="draft",
+            meeting_date=iso,
+            meeting_time=parent.get("meeting_time"),
+            duration_minutes=parent.get("duration_minutes"),
+            location=parent.get("location"),
+            video_link=parent.get("video_link"),
+            calendar_event_url=parent.get("calendar_event_url"),
+            agenda=parent.get("agenda"),
+            notes_url=parent.get("notes_url"),
+            notes_label=parent.get("notes_label"),
+        )
+        if new_id:
+            update_meeting(new_id, recurrence_parent_id=parent_id)
+            created += 1
+
+    return created, skipped
+
+
+def generate_event_occurrences(parent_id, max_count=100):
+    """Same logic as meetings, for events."""
+    parent = get_event(parent_id)
+    if not parent:
+        return 0, 0
+    if not parent.get("recurrence"):
+        return 0, 0
+    if parent.get("recurrence_parent_id"):
+        return 0, 0
+
+    end_date_str = parent.get("recurrence_end_date")
+    if not end_date_str:
+        return 0, 0
+
+    try:
+        end_date = datetime.fromisoformat(end_date_str).date()
+        start_date = datetime.fromisoformat(parent["event_date"]).date()
+    except Exception:
+        return 0, 0
+
+    if end_date <= start_date:
+        return 0, 0
+
+    existing = get_events_in_series(parent_id)
+    existing_dates = {e["event_date"] for e in existing if e.get("event_date")}
+    existing_dates.add(parent["event_date"])
+
+    pattern = parent["recurrence"]
+    current = start_date
+    created = 0
+    skipped = 0
+
+    for _ in range(max_count):
+        current = _next_recurrence_date(current, pattern)
+        if current is None or current > end_date:
+            break
+        iso = current.isoformat()
+        if iso in existing_dates:
+            skipped += 1
+            continue
+
+        new_id = add_event(
+            parent["exec_id"],
+            parent["name"],
+            objective=parent.get("objective"),
+            event_type=parent.get("event_type"),
+            status="planning",
+            event_date=iso,
+            start_time=parent.get("start_time"),
+            end_time=parent.get("end_time"),
+            venue_id=parent.get("venue_id"),
+            location_override=parent.get("location_override"),
+            headcount=parent.get("headcount"),
+            budget_total=0,
+            currency=parent.get("currency"),
+            calendar_event_url=parent.get("calendar_event_url"),
+            notes_native=parent.get("notes_native"),
+        )
+        if new_id:
+            update_event(new_id, recurrence_parent_id=parent_id)
+            created += 1
+
+    return created, skipped
