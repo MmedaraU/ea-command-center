@@ -5019,6 +5019,35 @@ def _render_event_detail_dialog(event_id):
         f"📅 {fmt_date(event.get('event_date'))}"
     )
 
+    if event.get("recurrence") and not event.get("recurrence_parent_id"):
+        rec_label = dict(db.RECURRENCE_OPTIONS).get(
+            event["recurrence"], event["recurrence"]
+        )
+        child_count = len(db.get_events_in_series(event_id))
+        st.info(
+            f"🔁 Recurring: **{rec_label}** until "
+            f"{fmt_date(event.get('recurrence_end_date'))}  ·  "
+            f"{child_count} occurrence(s) generated"
+        )
+        col_gen, col_sp = st.columns([1.5, 5])
+        with col_gen:
+            if st.button(
+                "🔄 Generate Occurrences",
+                key=f"ev_gen_occ_{event_id}",
+            ):
+                created, skipped = db.generate_event_occurrences(event_id)
+                if created:
+                    st.success(f"✅ Created {created} occurrence(s).")
+                    st.rerun()
+                elif skipped:
+                    st.info(f"All {skipped} dates already exist.")
+                else:
+                    st.warning("No occurrences generated.")
+    elif event.get("recurrence_parent_id"):
+        st.caption(
+            f"🔁 Part of a series (parent #{event['recurrence_parent_id']})"
+        )
+
     # ---- Prep Brief ----
     with st.expander("📋 Prep Brief", expanded=False):
         if st.button(
@@ -5206,6 +5235,51 @@ def _render_event_detail_dialog(event_id):
             )
             edit_linked_trip_id = trip_options[edit_linked_trip_label]
 
+            # ---- Recurrence ----
+            st.markdown("**🔁 Recurrence**")
+            if event.get("recurrence_parent_id"):
+                st.caption(
+                    "This event is part of a recurring series. "
+                    "Edit recurrence on the parent event."
+                )
+            else:
+                rec_options = dict(db.RECURRENCE_OPTIONS)
+                current_rec = event.get("recurrence") or ""
+                current_rec_label = rec_options.get(current_rec, "Never")
+                rec_labels = list(rec_options.values())
+                edit_recurrence_label = st.selectbox(
+                    "Repeat",
+                    options=rec_labels,
+                    index=(
+                        rec_labels.index(current_rec_label)
+                        if current_rec_label in rec_labels else 0
+                    ),
+                    key=f"ev_edit_recurrence_{event_id}",
+                )
+                edit_recurrence = next(
+                    (k for k, v in rec_options.items()
+                     if v == edit_recurrence_label),
+                    "",
+                )
+
+                default_rec_end = None
+                if event.get("recurrence_end_date"):
+                    try:
+                        default_rec_end = datetime.fromisoformat(
+                            event["recurrence_end_date"]
+                        ).date()
+                    except Exception:
+                        default_rec_end = None
+                if edit_recurrence:
+                    edit_recurrence_end = st.date_input(
+                        "Repeat until",
+                        value=default_rec_end
+                        or (datetime.now().date() + timedelta(days=365)),
+                        key=f"ev_edit_rec_end_{event_id}",
+                    )
+                else:
+                    edit_recurrence_end = default_rec_end
+
             col_save, col_cancel = st.columns(2)
             with col_save:
                 save_clicked = st.form_submit_button("💾 Save")
@@ -5241,6 +5315,17 @@ def _render_event_detail_dialog(event_id):
                         logistics_url=edit_logistics_url or None,
                         notes_native=edit_notes or None,
                         linked_trip_id=edit_linked_trip_id,
+                        recurrence=(
+                            edit_recurrence
+                            if not event.get("recurrence_parent_id")
+                            else event.get("recurrence")
+                        ),
+                        recurrence_end_date=(
+                            edit_recurrence_end.isoformat()
+                            if edit_recurrence_end
+                            and not event.get("recurrence_parent_id")
+                            else event.get("recurrence_end_date")
+                        ),
                     )
                     
                     st.success("✅ Event updated.")
@@ -7225,6 +7310,39 @@ def _render_meeting_detail_dialog(meeting_id):
         f"{_meeting_status_label(meeting.get('status') or 'draft')}"
     )
 
+    # ---- Recurrence indicator + generate ----
+    if meeting.get("recurrence") and not meeting.get("recurrence_parent_id"):
+        rec_label = dict(db.RECURRENCE_OPTIONS).get(
+            meeting["recurrence"], meeting["recurrence"]
+        )
+        child_count = len(db.get_meetings_in_series(meeting_id))
+        st.info(
+            f"🔁 Recurring: **{rec_label}** until "
+            f"{fmt_date(meeting.get('recurrence_end_date'))}  ·  "
+            f"{child_count} occurrence(s) generated"
+        )
+        col_gen, col_sp = st.columns([1.5, 5])
+        with col_gen:
+            if st.button(
+                "🔄 Generate Occurrences",
+                key=f"mtg_gen_occ_{meeting_id}",
+                help="Create the child meetings for this series.",
+            ):
+                created, skipped = db.generate_meeting_occurrences(meeting_id)
+                if created:
+                    st.success(f"✅ Created {created} occurrence(s).")
+                    st.rerun()
+                elif skipped:
+                    st.info(f"All {skipped} dates already exist.")
+                else:
+                    st.warning(
+                        "No occurrences generated. Check the repeat "
+                        "until date."
+                    )
+    elif meeting.get("recurrence_parent_id"):
+        parent_id = meeting["recurrence_parent_id"]
+        st.caption(f"🔁 Part of a series (parent #{parent_id})")
+
     # ---- Prep Brief ----
     with st.expander("📋 Prep Brief", expanded=False):
         if st.button(
@@ -7386,6 +7504,52 @@ def _render_meeting_detail_dialog(meeting_id):
             )
             edit_linked_trip_id = trip_options[edit_linked_trip_label]
 
+            # ---- Recurrence ----
+            st.markdown("**🔁 Recurrence**")
+            if meeting.get("recurrence_parent_id"):
+                # Child of a recurring series — show info, don't allow edit
+                st.caption(
+                    "This meeting is part of a recurring series. "
+                    "Edit recurrence on the parent meeting."
+                )
+            else:
+                rec_options = dict(db.RECURRENCE_OPTIONS)
+                current_rec = meeting.get("recurrence") or ""
+                current_rec_label = rec_options.get(current_rec, "Never")
+                rec_labels = list(rec_options.values())
+                edit_recurrence_label = st.selectbox(
+                    "Repeat",
+                    options=rec_labels,
+                    index=(
+                        rec_labels.index(current_rec_label)
+                        if current_rec_label in rec_labels else 0
+                    ),
+                    key=f"mtg_edit_recurrence_{meeting_id}",
+                )
+                edit_recurrence = next(
+                    (k for k, v in rec_options.items()
+                     if v == edit_recurrence_label),
+                    "",
+                )
+
+                default_rec_end = None
+                if meeting.get("recurrence_end_date"):
+                    try:
+                        default_rec_end = datetime.fromisoformat(
+                            meeting["recurrence_end_date"]
+                        ).date()
+                    except Exception:
+                        default_rec_end = None
+                if edit_recurrence:
+                    edit_recurrence_end = st.date_input(
+                        "Repeat until",
+                        value=default_rec_end
+                        or (datetime.now().date() + timedelta(days=90)),
+                        key=f"mtg_edit_rec_end_{meeting_id}",
+                    )
+                else:
+                    edit_recurrence_end = default_rec_end
+
             col_save, col_cancel = st.columns(2)
             with col_save:
                 save_clicked = st.form_submit_button("💾 Save")
@@ -7423,6 +7587,12 @@ def _render_meeting_detail_dialog(meeting_id):
                             edit_followup.isoformat() if edit_followup else None
                         ),
                         linked_trip_id=edit_linked_trip_id,
+                        recurrence=edit_recurrence if not meeting.get("recurrence_parent_id") else meeting.get("recurrence"),
+                        recurrence_end_date=(
+                            edit_recurrence_end.isoformat()
+                            if edit_recurrence_end and not meeting.get("recurrence_parent_id")
+                            else meeting.get("recurrence_end_date")
+                        ),
                     )
 
                     # Auto-log attendance if the meeting just completed
@@ -7807,6 +7977,24 @@ with tab_meetings:
             key="mtg_search",
         )
 
+    # ---- ICS export ----
+    exec_tz_map = {
+        e["id"]: db.get_executive_profile(e["id"]).get("timezone", "UTC")
+        for e in db.get_all_executives(active_only=False)
+    }
+    all_meetings = db.get_meetings()
+    if all_meetings:
+        ics_bytes = utils.generate_ics_for_meetings(all_meetings, exec_tz_map)
+        st.download_button(
+            "📅 Export All Meetings to Calendar (.ics)",
+            data=ics_bytes,
+            file_name=(
+                f"meetings_{datetime.now().strftime('%Y%m%d')}.ics"
+            ),
+            mime="text/calendar",
+            key="export_meetings_ics",
+        )
+
     # ---- New button ----
     col_new, _sp = st.columns([1.2, 5])
     with col_new:
@@ -7999,6 +8187,13 @@ with tab_meetings:
                     st.markdown(
                         f"### {m['title']}  ·  {status_label}"
                     )
+                    rec_marker = ""
+                    if m.get("recurrence_parent_id"):
+                        rec_marker = "  ·  🔁 Series"
+                    elif m.get("recurrence"):
+                        rec_marker = (
+                            f"  ·  🔁 {dict(db.RECURRENCE_OPTIONS).get(m['recurrence'], m['recurrence'])}"
+                        )
                     st.caption(
                         f"👤 {m.get('executive_name') or '—'}  ·  "
                         f"📅 {fmt_date(m.get('meeting_date'))}"
@@ -8006,6 +8201,7 @@ with tab_meetings:
                             f"  ·  🕐 {m['meeting_time']}"
                             if m.get("meeting_time") else ""
                         )
+                        + rec_marker
                     )
                     # Attendee + action item counts (lightweight counts)
                     atts = db.get_meeting_attendees(m["id"])
@@ -8113,6 +8309,22 @@ with tab_events:
         search_query = st.text_input(
             "Search", placeholder="Name or objective...",
             key="ev_search",
+        )
+
+    # ---- ICS export ----
+    exec_tz_map = {
+        e["id"]: db.get_executive_profile(e["id"]).get("timezone", "UTC")
+        for e in db.get_all_executives(active_only=False)
+    }
+    all_events = db.get_events()
+    if all_events:
+        ics_bytes = utils.generate_ics_for_events(all_events, exec_tz_map)
+        st.download_button(
+            "📅 Export All Events to Calendar (.ics)",
+            data=ics_bytes,
+            file_name=f"events_{datetime.now().strftime('%Y%m%d')}.ics",
+            mime="text/calendar",
+            key="export_events_ics",
         )
 
     # ---- New button ----
@@ -8358,6 +8570,13 @@ with tab_events:
                         or ev.get("location_override")
                         or "—"
                     )
+                    rec_marker = ""
+                    if ev.get("recurrence_parent_id"):
+                        rec_marker = "  ·  🔁 Series"
+                    elif ev.get("recurrence"):
+                        rec_marker = (
+                            f"  ·  🔁 {dict(db.RECURRENCE_OPTIONS).get(ev['recurrence'], ev['recurrence'])}"
+                        )
                     st.caption(
                         f"👤 {ev.get('executive_name') or '—'}  ·  "
                         f"📅 {fmt_date(ev.get('event_date'))}"
@@ -8366,6 +8585,7 @@ with tab_events:
                             if ev.get("start_time") else ""
                         )
                         + f"  ·  📍 {venue_display}"
+                        + rec_marker
                     )
                     counts = db.get_event_guest_status_counts(ev["id"])
                     accepted = counts.get("accepted", 0)
@@ -8434,6 +8654,26 @@ with tab_speaking:
         search_q = st.text_input(
             "Search", placeholder="Title, organizer, topic...",
             key="speak_search",
+        )
+
+    # ---- ICS export ----
+    exec_tz_map = {
+        e["id"]: db.get_executive_profile(e["id"]).get("timezone", "UTC")
+        for e in db.get_all_executives(active_only=False)
+    }
+    all_speaking = db.get_speaking_engagements()
+    if all_speaking:
+        ics_bytes = utils.generate_ics_for_speaking(
+            all_speaking, exec_tz_map
+        )
+        st.download_button(
+            "📅 Export All Engagements to Calendar (.ics)",
+            data=ics_bytes,
+            file_name=(
+                f"speaking_{datetime.now().strftime('%Y%m%d')}.ics"
+            ),
+            mime="text/calendar",
+            key="export_speaking_ics",
         )
 
     col_new, _sp = st.columns([1.4, 5])
@@ -9302,6 +9542,14 @@ with tab_dashboard:
                 st.metric("Due (7d)", len(ticktick_due_soon))
             with col_c:
                 st.metric("Overdue", len(ticktick_overdue))
+            # View all tasks button
+            if st.button(
+                "📋 View All Tasks",
+                key="view_all_tt_tasks",
+                use_container_width=True,
+            ):
+                st.session_state["dialog_all_tasks"] = True
+                st.rerun()
 
             if ticktick_overdue:
                 st.markdown("**🔴 Overdue**")
@@ -12814,8 +13062,6 @@ with tab_library:
                     )
                 st.divider()
 
-
-
     # ---- Checklist Templates ----
     # ---- Checklist Templates ----
     with lib3:
@@ -12931,9 +13177,6 @@ with tab_library:
                         on_confirm=_del_ct,
                     )
                 st.divider()
-
-
-
 
     # ---- Packing Templates ----
     # ---- Packing Templates ----
@@ -13067,7 +13310,6 @@ with tab_library:
                         on_confirm=_del_pt,
                     )
                 st.divider()
-
 
     # =========================================================
     # LIBRARY SUB-TAB: Emergency Directory
@@ -13580,6 +13822,179 @@ with tab_library:
                     st.divider()
 
 # =========================================================
+# ALL TICKTICK TASKS DIALOG
+# =========================================================
+
+
+def _clear_dialog_all_tasks():
+    st.session_state.pop("dialog_all_tasks", None)
+
+
+@st.dialog(
+    "✅ All TickTick Tasks",
+    width="large",
+    on_dismiss=_clear_dialog_all_tasks,
+)
+# =========================================================
+# ALL TICKTICK TASKS DIALOG
+# =========================================================
+
+
+def _clear_dialog_all_tasks():
+    st.session_state.pop("dialog_all_tasks", None)
+
+
+@st.dialog(
+    "✅ All TickTick Tasks",
+    width="large",
+    on_dismiss=_clear_dialog_all_tasks,
+)
+def _render_all_tasks_dialog():
+    st.markdown("### All Open Tasks")
+
+    search_q = st.text_input(
+        "🔍 Filter tasks",
+        placeholder="Search by title, tag, or executive...",
+        key="all_tasks_search",
+    )
+
+    tasks = db.get_ticktick_tasks(open_only=True)
+
+    if search_q:
+        q = search_q.lower()
+        filtered_tasks = []
+        for t in tasks:
+            title = (t.get("title") or "").lower()
+            tags = (t.get("tags") or "").lower()
+            _, exec_name, _ = db.resolve_ticktick_task_executive(t)
+            exec_str = (exec_name or "").lower()
+            if q in title or q in tags or q in exec_str:
+                filtered_tasks.append(t)
+        tasks = filtered_tasks
+
+    if not tasks:
+        st.info("No tasks match your filter.")
+        if st.button("Close", key="close_all_tasks_empty"):
+            st.session_state.pop("dialog_all_tasks", None)
+            st.rerun()
+        return
+
+    today_iso = datetime.now().date().isoformat()
+
+    def sort_key(t):
+        due = t.get("due_date")
+        if not due:
+            return (2, "9999-12-31")
+        if due < today_iso:
+            return (0, due)
+        return (1, due)
+
+    tasks.sort(key=sort_key)
+    st.caption(f"**{len(tasks)}** task(s)")
+
+    for t in tasks:
+        due = t.get("due_date")
+        title = t.get("title") or "—"
+        _, exec_name, tag_used = db.resolve_ticktick_task_executive(t)
+        ticktick_id = t["ticktick_id"]
+
+        # Row layout: Title | Meta | Priority | Edit | Complete
+        col1, col2, col3, col4 = st.columns([4, 2, 0.5, 0.5])
+
+        with col1:
+            st.markdown(f"**{title}**")
+            bits = []
+            if due:
+                if due < today_iso:
+                    bits.append(f"🔴 Overdue: {due}")
+                else:
+                    bits.append(f"📅 Due: {due}")
+            else:
+                bits.append("📅 No due date")
+
+            if exec_name:
+                bits.append(f"👤 {exec_name}")
+                if tag_used:
+                    bits.append(f"`{tag_used}`")
+            st.caption("  ·  ".join(bits))
+
+        with col2:
+            prio = t.get("priority")
+            if prio == 5:
+                st.caption("🔥 High")
+            elif prio == 3:
+                st.caption("⚡ Med")
+            elif prio == 1:
+                st.caption("🌱 Low")
+
+        with col3:
+            if st.button("✏️", key=f"tt_all_edit_{ticktick_id}"):
+                st.session_state[f"editing_tt_{ticktick_id}"] = True
+                st.rerun()
+
+        with col4:
+            if st.button("✓", key=f"tt_all_complete_{ticktick_id}"):
+                err = ticktick_sync.complete_task(ticktick_id)
+                if err:
+                    st.error(err)
+                else:
+                    st.success("Completed.")
+                    st.rerun()
+
+        # --- Inline Edit Form ---
+        if st.session_state.get(f"editing_tt_{ticktick_id}", False):
+            with st.expander(f"Edit: {title}", expanded=True):
+                with st.form(key=f"edit_tt_form_{ticktick_id}"):
+                    new_title = st.text_input("Title", value=title, key=f"tt_title_{ticktick_id}")
+                    
+                    col_d, col_p = st.columns(2)
+                    with col_d:
+                        try:
+                            default_due = datetime.fromisoformat(due).date() if due else None
+                        except Exception:
+                            default_due = None
+                        new_due = st.date_input("Due Date", value=default_due, key=f"tt_due_{ticktick_id}")
+                    
+                    with col_p:
+                        prio_opts = [0, 1, 3, 5]
+                        prio_labels = ["None", "Low", "Medium", "High"]
+                        current_prio_idx = prio_opts.index(prio) if prio in prio_opts else 0
+                        new_prio = st.selectbox(
+                            "Priority",
+                            options=prio_opts,
+                            index=current_prio_idx,
+                            format_func=lambda x: prio_labels[prio_opts.index(x)],
+                            key=f"tt_prio_{ticktick_id}",
+                        )
+
+                    col_save, col_cancel = st.columns(2)
+                    with col_save:
+                        if st.form_submit_button("💾 Save"):
+                            err = ticktick_sync.update_task(
+                                ticktick_id,
+                                title=new_title,
+                                due_date=new_due.isoformat() if new_due else None,
+                                priority=new_prio,
+                            )
+                            if err:
+                                st.error(err)
+                            else:
+                                st.session_state.pop(f"editing_tt_{ticktick_id}", None)
+                                st.success("Task updated.")
+                                st.rerun()
+                    with col_cancel:
+                        if st.form_submit_button("❌ Cancel"):
+                            st.session_state.pop(f"editing_tt_{ticktick_id}", None)
+                            st.rerun()
+
+        st.divider()
+
+    if st.button("Close", key="close_all_tasks"):
+        st.session_state.pop("dialog_all_tasks", None)
+        st.rerun()
+
+
+# =========================================================
 # GLOBAL DIALOGS
 # =========================================================
 # Rendered outside tab blocks so they can be triggered from
@@ -13610,3 +14025,6 @@ if st.session_state.get("dialog_speaking_id"):
     _render_speaking_detail_dialog(
         st.session_state["dialog_speaking_id"]
     )
+
+if st.session_state.get("dialog_all_tasks"):
+    _render_all_tasks_dialog()

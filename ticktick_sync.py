@@ -370,35 +370,32 @@ def pull_projects():
 
 def pull_tasks():
     """
-    Pull all tasks across all projects.
-
-    TickTick's /project/{id}/data endpoint returns both tasks and
-    the project metadata. We iterate projects and aggregate.
+    Pull all tasks across all projects, plus the Inbox.
+    TickTick's /project endpoint does NOT return the Inbox, so we
+    fetch it explicitly using the literal project id 'inbox'.
     """
     projects = db.get_ticktick_projects()
     if not projects:
-        # If we have no project cache yet, refresh it first.
         err = pull_projects()
         if err:
             return err
         projects = db.get_ticktick_projects()
 
     errors = []
+
+    # Always include the Inbox first
+    project_targets = [("Inbox", "inbox")]
     for p in projects:
-        pid = p["project_id"]
+        project_targets.append((p.get("name") or p["project_id"], p["project_id"]))
+
+    for name, pid in project_targets:
         data, err = _request("GET", f"/project/{pid}/data")
         if err:
-            errors.append(f"{p.get('name') or pid}: {err}")
+            errors.append(f"{name}: {err}")
             continue
         tasks = (data or {}).get("tasks") or []
         for t in tasks:
             _mirror_task(t)
-
-    # Also pull inbox tasks (project_id is a special value)
-    # TickTick's API returns inbox tasks via the same project endpoint
-    # when called with the inbox project id, which is user-specific.
-    # We skip explicit inbox handling here — inbox tasks will show up
-    # on the next full refresh once the inbox project is cached.
 
     return "; ".join(errors) if errors else None
 
@@ -615,6 +612,46 @@ def complete_task(ticktick_id):
         db.update_meeting_action_item(
             task["linked_to_id"], status="done"
         )
+    return None
+
+
+def update_task(ticktick_id, title=None, due_date=None, priority=None):
+    """
+    Update an existing task in TickTick and sync the local mirror.
+    Only the fields passed as non-None will be updated.
+    """
+    task = db.get_ticktick_task(ticktick_id)
+    if not task:
+        return "Task not found in local mirror."
+
+    project_id = task.get("project_id")
+    if not project_id:
+        return "Missing project_id."
+
+    payload = {
+        "id": ticktick_id,
+        "projectId": project_id,
+    }
+
+    if title is not None:
+        payload["title"] = title
+    if due_date is not None:
+        # TickTick expects full ISO 8601 for dueDate
+        payload["dueDate"] = f"{due_date}T09:00:00+0000" if due_date else None
+    if priority is not None:
+        payload["priority"] = int(priority)
+
+    data, err = _request("POST", f"/task/{ticktick_id}", json=payload)
+    if err:
+        return err
+
+    # Update local mirror
+    db.upsert_ticktick_task(
+        ticktick_id=ticktick_id,
+        title=title if title is not None else task.get("title"),
+        due_date=due_date if due_date is not None else task.get("due_date"),
+        priority=priority if priority is not None else task.get("priority"),
+    )
     return None
 
 
