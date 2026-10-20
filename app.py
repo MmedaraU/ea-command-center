@@ -5068,12 +5068,28 @@ def _render_event_detail_dialog(event_id):
 
         brief_html = st.session_state.get(f"ev_brief_html_{event_id}")
         if brief_html:
+            # Build a clean filename: Event_Name_2026-10-19
+            import re
+
+            safe_name = re.sub(
+                r"[^a-zA-Z0-9_\-]", "_", event.get("name") or "event"
+            ).strip("_")
+            date_suffix = datetime.now().strftime("%Y-%m-%d")
+
+            # Build a clean filename: Acme_Client_Dinner_Brief_2026-10-19
+            import re
+            safe_name = re.sub(
+                r'[^a-zA-Z0-9_\-]', '_', 
+                event.get("name") or "event"
+            ).strip("_")
+            date_suffix = datetime.now().strftime("%Y-%m-%d")
+            
             _render_brief_panel(
                 container_key=f"ev_brief_{event_id}",
                 brief_html=brief_html,
                 brief_pdf=st.session_state.get(f"ev_brief_pdf_{event_id}"),
                 brief_docx=st.session_state.get(f"ev_brief_docx_{event_id}"),
-                default_stem=f"event_brief_{event_id}",
+                default_stem=f"{safe_name}_Brief_{date_suffix}",
             )
         else:
             st.caption(
@@ -5336,7 +5352,7 @@ def _render_event_detail_dialog(event_id):
                             else event.get("recurrence_end_date")
                         ),
                     )
-                    
+
                     st.success("✅ Event updated.")
                     st.rerun()
 
@@ -5824,7 +5840,7 @@ def _render_event_detail_dialog(event_id):
                         status="estimated",
                     )
                     st.rerun()
-                    
+
     st.divider()
 
     # ================================================
@@ -6606,16 +6622,20 @@ def _render_speaking_detail_dialog(engagement_id):
             f"speak_brief_html_{engagement_id}"
         )
         if brief_html:
+            # Build a clean filename: TechCrunch_Keynote_Brief_2026-10-19
+            import re
+            safe_name = re.sub(
+                r'[^a-zA-Z0-9_\-]', '_', 
+                eng.get("title") or "engagement"
+            ).strip("_")
+            date_suffix = datetime.now().strftime("%Y-%m-%d")
+            
             _render_brief_panel(
                 container_key=f"speak_brief_{engagement_id}",
                 brief_html=brief_html,
-                brief_pdf=st.session_state.get(
-                    f"speak_brief_pdf_{engagement_id}"
-                ),
-                brief_docx=st.session_state.get(
-                    f"speak_brief_docx_{engagement_id}"
-                ),
-                default_stem=f"speaking_brief_{engagement_id}",
+                brief_pdf=st.session_state.get(f"speak_brief_pdf_{engagement_id}"),
+                brief_docx=st.session_state.get(f"speak_brief_docx_{engagement_id}"),
+                default_stem=f"{safe_name}_Brief_{date_suffix}",
             )
         else:
             st.caption(
@@ -7365,10 +7385,20 @@ def _render_meeting_detail_dialog(meeting_id):
 
         brief_html = st.session_state.get(f"mtg_brief_html_{meeting_id}")
         if brief_html:
+            # Build a clean filename: Q4_Board_Prep_Brief_2026-10-19
+            import re
+            safe_name = re.sub(
+                r'[^a-zA-Z0-9_\-]', '_', 
+                meeting.get("title") or "meeting"
+            ).strip("_")
+            date_suffix = datetime.now().strftime("%Y-%m-%d")
+            
             _render_brief_panel(
                 container_key=f"mtg_brief_{meeting_id}",
                 brief_html=brief_html,
-                default_filename=f"meeting_brief_{meeting_id}.html",
+                brief_pdf=st.session_state.get(f"mtg_brief_pdf_{meeting_id}"),
+                brief_docx=st.session_state.get(f"mtg_brief_docx_{meeting_id}"),
+                default_stem=f"{safe_name}_Brief_{date_suffix}",
             )
         else:
             st.caption(

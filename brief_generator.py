@@ -476,12 +476,15 @@ def generate_event_brief_html(event_id):
 
     # ---- Header ----
     status_kind = _status_badge_kind(event.get("status"))
+    exported_date = datetime.now().strftime("%d %b %Y, %H:%M")
     header = (
         f'<h1>{_esc(event.get("name"))}</h1>'
         f'<div class="subtitle">'
         f'{_badge(event.get("event_type") or "Event")} '
         f'{_badge(event.get("status") or "planning", status_kind)}'
-        f'</div>'
+        f'<span style="color:#6b7280;margin-left:12px;font-size:13px;">'
+        f"Exported {exported_date}</span>"
+        f"</div>"
     )
 
     # ---- Meta row ----
@@ -1271,9 +1274,11 @@ def generate_event_brief_docx(event_id):
     doc = _docx_new()
 
     _docx_title(doc, event.get("name"))
+    exported_date = datetime.now().strftime("%d %b %Y, %H:%M")
     subtitle_parts = [
         event.get("event_type") or "Event",
         (event.get("status") or "planning").replace("_", " ").title(),
+        f"Exported {exported_date}",
     ]
     _docx_subtitle(doc, " · ".join(subtitle_parts))
 
